@@ -33,7 +33,11 @@ def exclusive_runner(database: Path):
 
 
 class RunStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, read_only: bool = False):
+        if read_only:
+            self.db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+            self.db.row_factory = sqlite3.Row
+            return
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, timeout=30)
         self.db.row_factory = sqlite3.Row
@@ -128,8 +132,13 @@ class RunStore:
         return {(row["model"], row["item_id"], row["name"], row["rule"]): json.loads(row["response"])
                 for row in rows}
 
-    def attempts(self, run_id: str):
-        rows = self.db.execute("SELECT * FROM attempts WHERE run_id = ? ORDER BY id", (run_id,))
+    def attempts(self, run_id: str, *, task: str | None = None):
+        rows = self.db.execute("""
+            SELECT attempts.* FROM attempts
+            JOIN items USING (run_id, item_id)
+            WHERE run_id = ? AND (? IS NULL OR json_extract(items.item, '$.task') = ?)
+            ORDER BY attempts.id
+        """, (run_id, task, task))
         for row in rows:
             yield {**dict(row), "request": json.loads(row["request"]),
                    "response": json.loads(row["response"])}

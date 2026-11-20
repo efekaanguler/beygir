@@ -26,27 +26,32 @@ def write_report(store: RunStore, database: Path, run_id: str) -> Path:
         return export_report(store, directory, run_id)
 
 
+def score_responses(spec: dict, items: list[dict], completed: dict[tuple, object]):
+    conditions = list(itertools.product(spec["names"], spec["rules"]))
+    for endpoint in spec["endpoints"]:
+        model = endpoint["model_id"]
+        for item, (name, rule) in itertools.product(items, conditions):
+            key = model, item["id"], name, rule
+            yield scored_item(item, model, name, rule, key in completed, completed.get(key))
+
+
 def export_report(store: RunStore, directory: Path, run_id: str) -> Path:
     store.db.execute("BEGIN")
     with store.db:
         spec, items = store.load(run_id)
         completed = store.completed(run_id)
         attempts = list(store.attempts(run_id))
-    scores = []
+    scores = list(score_responses(spec, items, completed))
     conditions = list(itertools.product(spec["names"], spec["rules"]))
     condition_groups = defaultdict(list)
     matched_groups = defaultdict(list)
-    for endpoint in spec["endpoints"]:
-        model = endpoint["model_id"]
-        for item, (name, rule) in itertools.product(items, conditions):
-            key = model, item["id"], name, rule
-            row = scored_item(item, model, name, rule, key in completed, completed.get(key))
-            scores.append(row)
-            for scope in ("all", item["group"]):
-                condition_groups[model, item["task"], name, rule, scope].append(row)
-                matched_groups[model, item["task"], scope].append(row)
-            if row.get("common_mate"):
-                matched_groups[model, item["task"], "common_mate"].append(row)
+    for row in scores:
+        model, task, name, rule = (row[field] for field in ("model", "task", "name", "rule"))
+        for scope in ("all", row["group"]):
+            condition_groups[model, task, name, rule, scope].append(row)
+            matched_groups[model, task, scope].append(row)
+        if row.get("common_mate"):
+            matched_groups[model, task, "common_mate"].append(row)
     metrics = [{"model": model, "task": task, "name": name, "rule": rule, "scope": scope, **summarize(rows)}
                for (model, task, name, rule, scope), rows in sorted(condition_groups.items())]
     pairs = [record for (model, task, scope), rows in sorted(matched_groups.items())
