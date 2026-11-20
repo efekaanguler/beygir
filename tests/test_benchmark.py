@@ -12,7 +12,7 @@ from beygir.rules import Position, Rule, playable_positions
 
 class RuleTests(unittest.TestCase):
     def test_capture_required_and_king_safe(self):
-        board = chess.Board("4r1k1/8/8/8/8/8/3pR3/4K3 w - - 0 1")
+        board = chess.Board("4r1k1/8/8/8/8/8/3nR3/4K3 w - - 0 1")
         state = Position.from_board(board, Rule.CAPTURE)
         moves = {move.uci() for move in state.legal_moves()}
         self.assertNotIn("e2d2", moves)

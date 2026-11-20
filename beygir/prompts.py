@@ -44,3 +44,25 @@ def render(item: dict, name: str, rule: Rule, templates: dict[str, str]) -> str:
             f"Line B: {' '.join(item['audit_line'])}",
         ))
     return "\n\n".join(parts)
+
+
+def response_format(item: dict) -> dict:
+    """Describe the output shape without disclosing candidate answers."""
+
+    def object_schema(properties: dict) -> dict:
+        return {"type": "object", "properties": properties, "required": list(properties),
+                "additionalProperties": False}
+
+    if item["task"] == "mate":
+        fields = {
+            "mate_exists": {"type": "boolean"},
+            "move": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        }
+    else:
+        fields = {
+            "occupants": object_schema({square: {"type": "string"} for square in item["squares"]}),
+            "first_illegal": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        }
+    return {"type": "json_schema", "json_schema": {
+        "name": item["task"], "strict": True, "schema": object_schema(fields),
+    }}
