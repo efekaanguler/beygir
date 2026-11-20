@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import os
 import tempfile
@@ -7,8 +8,10 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import httpx
+from botocore.response import StreamingBody
 
-from beygir.batch import BedrockBatchClient, import_rows, load_batch_plan, prepare_batches
+from beygir.batch import (BedrockBatchClient, import_batch_file, import_rows,
+                           load_batch_plan, prepare_batches)
 from beygir.clients import BEDROCK
 from beygir.dataset import DEFAULT_ITEMS, SEED
 from beygir.endpoints import catalog
@@ -47,6 +50,26 @@ class BedrockTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(520, normalized["usage"]["total_tokens"])
         self.assertEqual({"mate_exists": False, "move": None}, parse_object(normalized))
 
+    def test_s3_download_waits_for_terminal_batch_state(self):
+        client = BedrockBatchClient.__new__(BedrockBatchClient)
+        client.control = Mock()
+        client.s3 = Mock()
+        remote = {"arn": "arn:example", "bucket": "fixture", "output_prefix": "run/out/"}
+        client.control.get_model_invocation_job.return_value = {"status": "InProgress"}
+        self.assertEqual([], list(client.outputs(remote)))
+        client.s3.get_object.assert_not_called()
+
+        first = {"recordId": "ABC", "modelOutput": {}}
+        content = (json.dumps(first) + "\n").encode()
+        client.control.get_model_invocation_job.return_value = {"status": "Completed"}
+        client.s3.get_paginator.return_value.paginate.return_value = [
+            {"Contents": [{"Key": "run/out/input.jsonl.out"}, {"Key": "run/out/manifest.json.out"}]}
+        ]
+        client.s3.get_object.return_value = {"Body": StreamingBody(io.BytesIO(content), len(content))}
+        self.assertEqual([first], list(client.outputs(remote)))
+        client.s3.get_object.assert_called_once_with(Bucket="fixture", Key="run/out/input.jsonl.out")
+        self.assertEqual("Completed", remote["status"])
+
     def test_prepared_batch_submits_and_imports_without_duplicates(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"BEDROCK_REGION": "eu-central-1"}):
             directory = Path(tmp)
@@ -80,3 +103,14 @@ class BedrockTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(0, import_rows(store, "trial", job, rows))
                 self.assertEqual({"response", "batch_error"}, {r["status"] for r in store.attempts("trial")})
                 self.assertEqual(1, store.progress("trial")[0]["saved"])
+
+                output = directory / "console.jsonl.out"
+                third = input_rows[2]
+                result = {**third, "modelOutput": rows[1]["modelOutput"]}
+                output.write_text(json.dumps({**result, "modelInput": {"messages": []}}) + "\n")
+                with self.assertRaisesRegex(ValueError, "does not match"):
+                    import_batch_file(store, directory, "trial", "aws-qwen32", output)
+                output.write_text(json.dumps(result) + "\n")
+                self.assertEqual(1, import_batch_file(store, directory, "trial", "aws-qwen32", output))
+                self.assertEqual(0, import_batch_file(store, directory, "trial", "aws-qwen32", output))
+                self.assertEqual(2, store.progress("trial")[0]["saved"])

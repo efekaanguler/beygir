@@ -9,9 +9,10 @@ import time
 from pathlib import Path
 
 import boto3
+import httpx
 from botocore.config import Config
 
-from .clients import BEDROCK
+from .clients import BEDROCK, bedrock_key_region
 from .endpoints import Endpoint
 from .prompts import NAMES, render, response_format
 from .rules import Rule
@@ -67,6 +68,19 @@ def prepare_batches(store: RunStore, directory: Path, run_id: str, dataset: Path
     atomic_json(plan_path, saved)
 
 
+def read_prepared_input(directory: Path, job: dict) -> bytes:
+    path = directory / job["file"]
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != job["sha256"]:
+        raise ValueError(f"Batch input was modified: {path}")
+    return raw
+
+
+def model_inputs(directory: Path, job: dict) -> dict[str, dict]:
+    return {row["recordId"]: row["modelInput"]
+            for row in map(json.loads, read_prepared_input(directory, job).splitlines())}
+
+
 class BedrockBatchClient:
     """Use normal AWS IAM credentials for S3 and the Bedrock control plane."""
 
@@ -79,9 +93,7 @@ class BedrockBatchClient:
         self.control = session.client("bedrock", config=config.merge(Config(signature_version="v4")))
 
     def submit(self, run_id: str, alias: str, job: dict, source: Path, bucket: str, role: str) -> dict:
-        raw = source.read_bytes()
-        if hashlib.sha256(raw).hexdigest() != job["sha256"]:
-            raise ValueError(f"Batch input was modified: {source}")
+        raw = read_prepared_input(source.parent, job)
         prefix = f"beygir/{run_id}/{alias}/{job['sha256'][:12]}"
         input_key = f"{prefix}/input.jsonl"
         output_prefix = f"{prefix}/out/"
@@ -145,16 +157,20 @@ def submit_batches(directory: Path, run_id: str) -> None:
         print(f"{alias}: submitted {job['remote']['arn']}")
 
 
-def import_rows(store: RunStore, run_id: str, job: dict, rows) -> int:
+def import_rows(store: RunStore, run_id: str, job: dict, rows,
+                expected_inputs: dict[str, dict] | None = None) -> int:
     completed = store.completed(run_id)
     route = "batch:" + job["remote"]["arn"]
     seen = {(row["item_id"], row["name"], row["rule"]) for row in store.attempts(run_id)
             if row["route"] == route}
     imported = 0
     for row in rows:
-        key = job["records"].get(row["recordId"])
+        record_id = row["recordId"]
+        key = job["records"].get(record_id)
         if key is None:
             raise ValueError("Bedrock returned a record ID outside the saved batch manifest")
+        if expected_inputs is not None and row.get("modelInput") != expected_inputs[record_id]:
+            raise ValueError(f"Returned request does not match the saved input for {record_id}")
         cell = (key["item_id"], key["name"], key["rule"])
         if cell in seen or (job["model"], *cell) in completed:
             continue
@@ -179,5 +195,59 @@ def collect_batches(store: RunStore, directory: Path, run_id: str) -> None:
         if job["region"] not in clients:
             clients[job["region"]] = BedrockBatchClient(job["region"])
         rows = clients[job["region"]].outputs(job["remote"])
-        print(f"{alias}: imported {import_rows(store, run_id, job, rows)} new records")
+        imported = import_rows(store, run_id, job, rows, expected_inputs=model_inputs(directory, job))
+        print(f"{alias}: imported {imported} new records")
         atomic_json(directory / "plan.json", plan)
+
+
+def check_batch(directory: Path) -> None:
+    """Check local inputs and AWS connectivity without submitting a chargeable job."""
+    jobs = list(load_batch_plan(directory)["jobs"].values())
+    for job in jobs:
+        raw = read_prepared_input(directory, job)
+        record_ids = [json.loads(line)["recordId"] for line in raw.splitlines()]
+        if len(record_ids) < MIN_RECORDS or len(record_ids) != len(job["records"]) or set(record_ids) != set(job["records"]):
+            raise ValueError(f"Invalid record IDs or count in {job['file']}")
+        print(f"{job['region']} | {job['model']} | {len(record_ids)} local records verified")
+    regions = {job["region"] for job in jobs}
+    bearer = os.getenv("AWS_BEARER_TOKEN_BEDROCK", "").strip()
+    if bearer:
+        scope = bedrock_key_region(bearer)
+        with httpx.Client(timeout=15, trust_env=False) as http:
+            for region in sorted(regions):
+                if scope and scope != region:
+                    print(f"{region}: authorization probe skipped; bearer belongs to {scope}.")
+                    continue
+                response = http.get(f"https://bedrock.{region}.amazonaws.com/model-invocation-jobs",
+                                    params={"maxResults": 1}, headers={"Authorization": f"Bearer {bearer}"})
+                print(f"{region}: Bedrock ListModelInvocationJobs returned HTTP {response.status_code}")
+
+    bucket = os.getenv("BEDROCK_BATCH_BUCKET", "").strip()
+    role = os.getenv("BEDROCK_BATCH_ROLE_ARN", "").strip()
+    missing = [name for name, value in (("BEDROCK_BATCH_BUCKET", bucket), ("BEDROCK_BATCH_ROLE_ARN", role)) if not value]
+    for region in sorted(regions):
+        session = boto3.Session(region_name=region)
+        if session.get_credentials() is None:
+            missing.append("AWS SDK credentials or AWS_PROFILE")
+            break
+        if bucket:
+            result = session.client("s3", config=Config(connect_timeout=8, read_timeout=15)).head_bucket(Bucket=bucket)
+            bucket_region = result.get("BucketRegion") or result["ResponseMetadata"]["HTTPHeaders"].get("x-amz-bucket-region")
+            if bucket_region and bucket_region != region:
+                raise ValueError(f"S3 bucket is in {bucket_region}; batch uses {region}")
+            print(f"{region}: S3 HeadBucket succeeded")
+    if missing:
+        raise ValueError("Batch submission needs " + ", ".join(missing))
+    print("Batch preflight complete. Job creation verifies PassRole and model permissions.")
+
+
+def import_batch_file(store: RunStore, directory: Path, run_id: str, alias: str, path: Path) -> int:
+    """Import a Bedrock JSONL output downloaded from the AWS console."""
+    job = load_batch_plan(directory)["jobs"].get(alias)
+    if job is None:
+        raise ValueError(f"Model {alias} is absent from the prepared batch")
+    inputs = model_inputs(directory, job)
+    output = path.read_bytes()
+    saved = {**job, "remote": {"arn": f"file:{hashlib.sha256(output).hexdigest()}"}}
+    rows = (json.loads(line) for line in output.splitlines() if line.strip())
+    return import_rows(store, run_id, saved, rows, expected_inputs=inputs)

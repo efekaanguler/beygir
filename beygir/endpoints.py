@@ -45,7 +45,7 @@ class Route:
 
 
 def catalog() -> dict[str, Endpoint]:
-    region = os.getenv("BEDROCK_REGION", "eu-central-1").strip() or "eu-central-1"
+    region = os.getenv("BEDROCK_REGION", "eu-north-1").strip() or "eu-north-1"
     if not re.fullmatch(r"(?:eu|us|ap|ca|sa|me|af|il|mx)-[a-z]+-\d+", region):
         raise ValueError("BEDROCK_REGION must be an AWS region code")
     models = {
@@ -65,6 +65,8 @@ def catalog() -> dict[str, Endpoint]:
         ("aws-kimi", "moonshotai.kimi-k2.5", 4096, ""),
         ("aws-nova", "eu.amazon.nova-2-lite-v1:0", 2048, ""),
         ("aws-haiku", "eu.anthropic.claude-haiku-4-5-20251001-v1:0", 2048, ""),
+        ("aws-devstral", "mistral.devstral-2-123b", 2048, ""),
+        ("aws-nova-lite", "eu.amazon.nova-lite-v1:0", 1024, ""),
         ("aws-minimax", "minimax.minimax-m2.1", 4096, ""),
     )
     for alias, model, cap, reasoning in bedrock_models:

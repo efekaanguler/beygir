@@ -4,11 +4,13 @@ import argparse
 import asyncio
 from pathlib import Path
 
+from httpx import HTTPError
+
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
-from .batch import (TERMINAL, batch_directory, collect_batches, load_batch_plan,
-                    prepare_batches, submit_batches)
+from .batch import (TERMINAL, batch_directory, check_batch, collect_batches, import_batch_file,
+                    load_batch_plan, prepare_batches, submit_batches)
 from .clients import client_for
 from .dataset import DEFAULT_ITEMS, SEED
 from .endpoints import DEFAULT_MODELS, catalog
@@ -36,7 +38,11 @@ def main() -> None:
     prepare = commands.add_parser("batch-prepare", help="write offline Bedrock JSONL and a record manifest")
     submit = commands.add_parser("batch-submit", help="upload and submit a prepared Bedrock batch")
     collect = commands.add_parser("batch-collect", help="import completed Bedrock batch outputs")
-    for command in (run, report, status, prepare, submit, collect):
+    check = commands.add_parser("batch-check", help="check prepared inputs and AWS batch prerequisites")
+    import_file = commands.add_parser("batch-import", help="import a Bedrock output downloaded from S3")
+    import_file.add_argument("--model", required=True, help="aws-* alias in the prepared batch")
+    import_file.add_argument("--output", required=True, type=Path, help="downloaded .jsonl.out file")
+    for command in (run, report, status, prepare, submit, collect, check, import_file):
         command.add_argument("run_id")
         command.add_argument("--db", type=Path, default=DEFAULT_DB)
     models = catalog()
@@ -68,14 +74,21 @@ def main() -> None:
                 print(f"{row['model']:<26} {row['saved']:>4}/{row['planned']:<4}  "
                       f"{row['last_hour']:>3} last hour  {row['attempts'] - row['saved']:>3} retries/errors  {average}")
             return
-        if args.command in ("batch-submit", "batch-collect"):
+        if args.command == "batch-check":
+            check_batch(batch_directory(args.db, args.run_id))
+            return
+        if args.command in ("batch-submit", "batch-collect", "batch-import"):
             directory = batch_directory(args.db, args.run_id)
             with exclusive_runner(args.db), RunStore(args.db) as store:
                 if args.command == "batch-submit":
                     submit_batches(directory, args.run_id)
+                    return
+                if args.command == "batch-import":
+                    count = import_batch_file(store, directory, args.run_id, args.model, args.output)
+                    print(f"{args.model}: imported {count} new records")
                 else:
                     collect_batches(store, directory, args.run_id)
-                    write_report(store, args.db, args.run_id)
+                write_report(store, args.db, args.run_id)
             return
         if len(set(args.models)) != len(args.models):
             parser.error("--models must be unique")
@@ -103,7 +116,7 @@ def main() -> None:
             except KeyboardInterrupt:
                 print("\nInterrupted. Completed responses are saved and can be resumed.")
             write_report(store, args.db, args.run_id)
-    except (ValueError, BotoCoreError, ClientError) as error:
+    except (ValueError, OSError, HTTPError, BotoCoreError, ClientError) as error:
         parser.exit(2, f"beygir: {error}\n")
 
 

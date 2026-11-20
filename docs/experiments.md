@@ -51,32 +51,44 @@ Item accuracy counts malformed answers as incorrect when the given field cannot 
 
 ## AWS Bedrock
 
-The default AWS region is Frankfurt. Set BEDROCK_REGION=eu-central-1 and place a matching regional bearer in AWS_BEARER_TOKEN_BEDROCK. The CLI rejects a recognized short-term key from a different region. Groq aliases and aws-* aliases use separate provider adapters. Choose a different run ID when changing regions or the sampling design.
+Stockholm is the default region. Set BEDROCK_REGION=eu-north-1 and place the matching bearer in AWS_BEARER_TOKEN_BEDROCK. The CLI rejects a recognized short-term bearer from a different AWS region. Use a new run ID when changing the region, dataset size, or sampling scheme.
 
-A balanced 80-position run selects 10 items per group for each task, retaining the full 2-by-3 condition matrix. The five suggested Frankfurt endpoints are GPT-OSS 20B, GPT-OSS 120B, Qwen3 32B, GLM 4.7 Flash and Nova 2 Lite. Nova uses the EU inference profile.
+The expanded benchmark selects 20 items per sampling group per task for 160 unique items. Each of seven models receives the same 960 requests across the six conditions. The endpoints are GPT-OSS 20B, GPT-OSS 120B, Qwen3 32B, GLM 4.7 Flash, Amazon Nova 2 Lite, Mistral Devstral 2 123B and GLM 4.7. Nova uses an EU inference profile.
 
 ### On demand
 
 ~~~sh
-.venv/bin/python -m beygir run aws-live-pilot --split pilot \
-  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova --max-new-per-model 2
-
-.venv/bin/python -m beygir run aws-live-delivery --split main --per-group 10 \
-  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova --workers 4
+.venv/bin/python -m beygir run stockholm-live --split main --per-group 20 --workers 4 \
+  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova aws-devstral aws-glm47
 ~~~
 
-Bedrock sends native Converse requests and retains the raw Bedrock answer alongside the normalized scoring fields. The same scoring rules accept a single JSON object, optionally enclosed in one Markdown code fence. Model-visible explanations outside that object still count as format failures.
+Bedrock sends native Converse requests and keeps the raw provider reply alongside normalized scoring fields. Scoring accepts a single JSON object with an optional Markdown code fence.
 
 ### Batch
 
-Use a unique run ID for a batch. Offline preparation creates one JSONL input per model and saves its record IDs under runs/. Batch submission and collection require standard AWS SDK credentials with S3 access and Bedrock job permissions. Configure AWS_PROFILE if needed, and set BEDROCK_BATCH_BUCKET to an existing regional bucket and BEDROCK_BATCH_ROLE_ARN to a Bedrock batch service role. The submitting identity needs permission to pass that role. Limit the role's S3 permissions to the relevant input and output paths.
+Use a unique run ID for a batch. Preparation creates one JSONL input per model under runs/. Batch submission and automated collection use standard AWS SDK credentials with S3 access and Bedrock job permissions. Configure AWS_PROFILE if needed, and set BEDROCK_BATCH_BUCKET to an existing Stockholm bucket and BEDROCK_BATCH_ROLE_ARN to a Bedrock batch service role. The submitting identity needs permission to pass that role. Limit the role’s S3 permissions to the relevant input and output paths.
 
 ~~~sh
-.venv/bin/python -m beygir batch-prepare aws-delivery --per-group 10 \
-  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova
-.venv/bin/python -m beygir batch-submit aws-delivery
-.venv/bin/python -m beygir batch-collect aws-delivery
-.venv/bin/python -m beygir status aws-delivery
+# 144 records for a small one-model batch test
+.venv/bin/python -m beygir batch-prepare stockholm-batch-smoke --per-group 3 --models aws-qwen32
+.venv/bin/python -m beygir batch-check stockholm-batch-smoke
+.venv/bin/python -m beygir batch-submit stockholm-batch-smoke
+.venv/bin/python -m beygir batch-collect stockholm-batch-smoke
+
+# Expanded experiment
+.venv/bin/python -m beygir batch-prepare stockholm-delivery --per-group 20 \
+  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova aws-devstral aws-glm47
+.venv/bin/python -m beygir batch-check stockholm-delivery
+.venv/bin/python -m beygir batch-submit stockholm-delivery
+.venv/bin/python -m beygir batch-collect stockholm-delivery
+.venv/bin/python -m beygir status stockholm-delivery
 ~~~
 
-Collection can be repeated as jobs finish. Successful replies and per-record errors are imported by record ID, independent of output order. Do not run the same unfinished batch cells through on-demand while the batch is active. AWS batch completion is capacity-dependent.
+If AWS CLI credentials are unavailable, you can use the AWS console in Stockholm. Upload the prepared model JSONL to S3, select the matching model and Converse invocation type in Bedrock Batch inference, and choose the input, output and service role. Download its .jsonl.out file after completion and import it locally:
+
+~~~sh
+.venv/bin/python -m beygir batch-import stockholm-batch-smoke \
+  --model aws-qwen32 --output /path/to/input.jsonl.out
+~~~
+
+Collection and local import can be repeated. The importer uses record IDs to pair results and keeps per-record errors. AWS batch completion depends on capacity.
