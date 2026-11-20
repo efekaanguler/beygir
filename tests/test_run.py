@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import json
 import os
@@ -136,6 +137,39 @@ class EndToEndTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([item], cached)
                 with self.assertRaises(ValueError):
                     store.start("extend", {"seed": 2, "endpoints": [first, second]}, [item])
+
+    async def test_serial_mode_limits_concurrency_across_models(self):
+        active = 0
+        peak = 0
+        count = 0
+        http_type = httpx.AsyncClient
+
+        async def server(request):
+            nonlocal active, peak, count
+            if request.method == "GET":
+                return httpx.Response(200, json={"data": [
+                    {"id": "openai/gpt-oss-20b"}, {"id": "openai/gpt-oss-120b"},
+                ]})
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            count += 1
+            return httpx.Response(200, json={"choices": [], "usage": {"total_tokens": 1}})
+
+        def mocked_client(**kwargs):
+            return http_type(transport=httpx.MockTransport(server), **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            with RunStore(Path(directory) / "run.sqlite3") as store:
+                with patch.dict(os.environ, {"GROQ_API_KEY_1": "serial-test"}), patch(
+                    "beygir.runner.httpx.AsyncClient", mocked_client
+                ):
+                    endpoints = [catalog()[name] for name in ("gpt20", "gpt120")]
+                    await execute(store, "serial", DEFAULT_ITEMS, "pilot",
+                                  endpoints, SEED, 4, 2, serial=True)
+        self.assertEqual(4, count)
+        self.assertEqual(1, peak)
 
     async def test_resume_and_offline_exports(self):
         requests = []

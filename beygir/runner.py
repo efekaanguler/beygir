@@ -8,7 +8,7 @@ import random
 import time
 from collections import deque
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from pathlib import Path
 
 import httpx
@@ -110,62 +110,64 @@ def redact(value, keys: list[str]):
     return value
 
 
-async def api_attempt(client, store, endpoint, pool, run_id, item, name, rule, payload):
+async def api_attempt(client, store, endpoint, pool, run_id, item, name, rule, payload,
+                      request_gate: asyncio.Lock | None = None):
     reservation = await pool.acquire()
     if reservation is None:
         return "unavailable"
     route, quota, event = reservation
-    started = event[0]
-    status = "transport_error"
-    http_status = None
-    charged = event[1]
-    body = None
-    response_headers = {}
-    try:
-        adapter = client_for(endpoint)
-        response = await adapter.complete(client, endpoint, route, payload)
-        http_status = response.status_code
-        response_headers = response.headers
+    async with request_gate if request_gate is not None else nullcontext():
+        started = event[0] = time.time()
+        status = "transport_error"
+        http_status = None
+        charged = event[1]
+        body = None
+        response_headers = {}
         try:
-            body = adapter.normalize(response.json())
-        except ValueError:
-            body = response.text
-        quota.observe(response.headers, http_status)
-        error = body.get("error") if isinstance(body, dict) else None
-        validation_failed = isinstance(error, dict) and error.get("code") == "json_validate_failed"
-        if (response.is_success and not error) or validation_failed:
-            status = "response"
-            charged = response_tokens(body, charged)
-        elif http_status == 429:
-            status = "rate_limited"
-        elif http_status >= 500 or http_status in (408, 409):
-            status = "transport_error"
-        else:
-            status = "endpoint_error"
-            if http_status in (401, 403):
-                pool.disabled.add(route.label)
-                status = "route_error"
-    except asyncio.CancelledError:
-        status = "interrupted"
-        raise
-    except httpx.RequestError as error:
-        body = {"error": type(error).__name__}
-    finally:
-        if status == "transport_error":
-            delay = pool.mark_transient_failure(route, response_headers)
-            print(f"{endpoint.alias}: {route.label} cooling down for {delay:g}s after a temporary error.",
-                  flush=True)
-        elif status == "response":
-            pool.mark_success(route)
-        event[1] = charged
-        store.record({
-            "run_id": run_id, "item_id": item["id"], "name": name, "rule": rule.value,
-            "model": endpoint.model_id, "route": route.label, "quota_group": route.quota_group,
-            "started": started, "duration": round(time.time() - started, 3), "status": status,
-            "http_status": http_status, "charged_tokens": charged, "request": payload,
-            "response": redact(body, [candidate.key for candidate in pool.routes]),
-        })
-    return status
+            adapter = client_for(endpoint)
+            response = await adapter.complete(client, endpoint, route, payload)
+            http_status = response.status_code
+            response_headers = response.headers
+            try:
+                body = adapter.normalize(response.json())
+            except ValueError:
+                body = response.text
+            quota.observe(response.headers, http_status)
+            error = body.get("error") if isinstance(body, dict) else None
+            validation_failed = isinstance(error, dict) and error.get("code") == "json_validate_failed"
+            if (response.is_success and not error) or validation_failed:
+                status = "response"
+                charged = response_tokens(body, charged)
+            elif http_status == 429:
+                status = "rate_limited"
+            elif http_status >= 500 or http_status in (408, 409):
+                status = "transport_error"
+            else:
+                status = "endpoint_error"
+                if http_status in (401, 403):
+                    pool.disabled.add(route.label)
+                    status = "route_error"
+        except asyncio.CancelledError:
+            status = "interrupted"
+            raise
+        except httpx.RequestError as error:
+            body = {"error": type(error).__name__}
+        finally:
+            if status == "transport_error":
+                delay = pool.mark_transient_failure(route, response_headers)
+                print(f"{endpoint.alias}: {route.label} cooling down for {delay:g}s after a temporary error.",
+                      flush=True)
+            elif status == "response":
+                pool.mark_success(route)
+            event[1] = charged
+            store.record({
+                "run_id": run_id, "item_id": item["id"], "name": name, "rule": rule.value,
+                "model": endpoint.model_id, "route": route.label, "quota_group": route.quota_group,
+                "started": started, "duration": round(time.time() - started, 3), "status": status,
+                "http_status": http_status, "charged_tokens": charged, "request": payload,
+                "response": redact(body, [candidate.key for candidate in pool.routes]),
+            })
+        return status
 
 
 async def pick_routes(client: httpx.AsyncClient, endpoints: list[Endpoint]):
@@ -221,7 +223,7 @@ def prepare_run(store: RunStore, run_id: str, dataset: Path, split: str, endpoin
 async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpoints: list[Endpoint],
                   seed: int, workers: int, max_new: int | None, *,
                   follow: bool = False, snapshot: Callable[[], object] | None = None,
-                  per_group: int | None = None) -> None:
+                  per_group: int | None = None, serial: bool = False) -> None:
     items, templates = prepare_run(store, run_id, dataset, split, endpoints, seed, per_group)
     completed = store.completed(run_id)
     all_jobs = list(itertools.product(items, NAMES, Rule))
@@ -238,6 +240,7 @@ async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpo
 
     async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
         routes = await pick_routes(client, needed)
+        request_gate = asyncio.Lock() if serial else None
 
         async def run_endpoint(endpoint: Endpoint) -> None:
             pool = RoutePool(routes[endpoint.alias], endpoint, store, follow)
@@ -254,7 +257,7 @@ async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpo
                     payload = client_for(endpoint).payload(endpoint, render(item, name, rule, templates), response_format(item))
                     for _ in range(RETRIES):
                         status = await api_attempt(client, store, endpoint, pool, run_id,
-                                                   item, name, rule, payload)
+                                                   item, name, rule, payload, request_gate)
                         if status == "response":
                             finished += 1
                             if finished == planned or finished % 25 == 0:
@@ -272,7 +275,7 @@ async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpo
                             jobs.append(job)
 
             async with asyncio.TaskGroup() as group:
-                for _ in range(min(workers, planned)):
+                for _ in range(min(1 if serial else workers, planned)):
                     group.create_task(worker())
 
         async def snapshots() -> None:

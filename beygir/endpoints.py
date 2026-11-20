@@ -27,12 +27,14 @@ class Endpoint:
     structured_output: bool = True
     token_estimate: int = 2600
     region: str = ""
+    thinking_disabled: bool = False
 
     def signature(self) -> dict:
         return {"alias": self.alias, "model_id": self.model_id, "api": self.base_url,
                 "provider": "bedrock" if self.region else "", "reasoning": self.reasoning,
                 "temperature": 0, "max_completion_tokens": self.max_tokens,
-                "structured_output": self.structured_output}
+                "structured_output": self.structured_output,
+                **({"thinking_disabled": True} if self.thinking_disabled else {})}
 
 @dataclass(frozen=True)
 class Route:
@@ -61,9 +63,10 @@ def catalog() -> dict[str, Endpoint]:
         ("aws-qwen32", "qwen.qwen3-32b-v1:0", 4096, ""),
         ("aws-glmflash", "zai.glm-4.7-flash", 4096, ""),
         ("aws-glm47", "zai.glm-4.7", 4096, ""),
-        ("aws-deepseek", "deepseek.v3.2", 4096, ""),
+        ("aws-deepseek", "deepseek.v3.2", 1024, ""),
         ("aws-kimi", "moonshotai.kimi-k2.5", 4096, ""),
         ("aws-nova", "eu.amazon.nova-2-lite-v1:0", 2048, ""),
+        ("aws-sonnet", "eu.anthropic.claude-sonnet-4-6", 1024, ""),
         ("aws-haiku", "eu.anthropic.claude-haiku-4-5-20251001-v1:0", 2048, ""),
         ("aws-devstral", "mistral.devstral-2-123b", 2048, ""),
         ("aws-nova-lite", "eu.amazon.nova-lite-v1:0", 1024, ""),
@@ -73,7 +76,8 @@ def catalog() -> dict[str, Endpoint]:
         models[alias] = Endpoint(
             alias, model, f"https://bedrock-runtime.{region}.amazonaws.com",
             reasoning=reasoning, limits=Limits(rpm=30, rpd=100_000, tpm=100_000, tpd=100_000_000),
-            max_tokens=cap, structured_output=False, region=region,
+            max_tokens=cap, structured_output=alias in {"aws-deepseek", "aws-sonnet"},
+            region=region, thinking_disabled=alias == "aws-deepseek",
         )
     return models
 

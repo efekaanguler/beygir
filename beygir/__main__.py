@@ -54,6 +54,7 @@ def main() -> None:
         command.add_argument("--seed", type=int, default=SEED)
         command.add_argument("--per-group", type=positive_int, help="pick this many items per task and sample group")
     run.add_argument("--workers", type=positive_int, default=3, help="concurrent requests per model")
+    run.add_argument("--serial", action="store_true", help="allow only one in-flight model request across all models")
     run.add_argument("--keep-waiting", action="store_true",
                      help="wait through quota windows and write reports every 15 minutes")
     run.add_argument("--max-new-per-model", type=positive_int, help="limit pending jobs scheduled per model")
@@ -111,7 +112,7 @@ def main() -> None:
                 asyncio.run(execute(store, args.run_id, args.dataset, args.split,
                                     endpoints, args.seed,
                                     args.workers, args.max_new_per_model,
-                                    follow=args.keep_waiting, per_group=args.per_group,
+                                    follow=args.keep_waiting, per_group=args.per_group, serial=args.serial,
                                     snapshot=lambda: write_report(store, args.db, args.run_id)))
             except KeyboardInterrupt:
                 print("\nInterrupted. Completed responses are saved and can be resumed.")

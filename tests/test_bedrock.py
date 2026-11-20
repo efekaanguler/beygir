@@ -15,6 +15,7 @@ from beygir.batch import (BedrockBatchClient, import_batch_file, import_rows,
 from beygir.clients import BEDROCK
 from beygir.dataset import DEFAULT_ITEMS, SEED
 from beygir.endpoints import catalog
+from beygir.prompts import response_format
 from beygir.scoring import parse_object
 from beygir.storage import RunStore
 
@@ -49,6 +50,15 @@ class BedrockTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body, normalized["bedrock"])
         self.assertEqual(520, normalized["usage"]["total_tokens"])
         self.assertEqual({"mate_exists": False, "move": None}, parse_object(normalized))
+
+    def test_deepseek_uses_validated_json_without_thinking(self):
+        endpoint = catalog()["aws-deepseek"]
+        schema = response_format({"task": "mate"})
+        request = BEDROCK.payload(endpoint, "Test", schema)
+        json_schema = request["outputConfig"]["textFormat"]["structure"]["jsonSchema"]
+        self.assertEqual(schema["json_schema"]["schema"], json.loads(json_schema["schema"]))
+        self.assertEqual({"thinking": {"type": "disabled"}}, request["additionalModelRequestFields"])
+        self.assertEqual(1024, request["inferenceConfig"]["maxTokens"])
 
     def test_s3_download_waits_for_terminal_batch_state(self):
         client = BedrockBatchClient.__new__(BedrockBatchClient)

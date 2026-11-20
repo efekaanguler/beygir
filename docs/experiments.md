@@ -55,14 +55,17 @@ Stockholm is the default region. Set BEDROCK_REGION=eu-north-1 and place the mat
 
 The expanded benchmark selects 20 items per sampling group per task for 160 unique items. Each of seven models receives the same 960 requests across the six conditions. The endpoints are GPT-OSS 20B, GPT-OSS 120B, Qwen3 32B, GLM 4.7 Flash, Amazon Nova 2 Lite, Mistral Devstral 2 123B and GLM 4.7. Nova uses an EU inference profile.
 
-### On demand
+### Sequential on demand
+
+The delivery run is planned for 120 balanced items with 15 items per sampling group and task. Its eight models share all six conditions and receive 720 requests each. This makes 5,760 planned responses. DeepSeek uses its native JSON schema and sends thinking disabled. Availability of Claude, Grok and GPT-6.2 Sol depends on the AWS account, so validate both tasks for each model before including it.
 
 ~~~sh
-.venv/bin/python -m beygir run stockholm-live --split main --per-group 20 --workers 4 \
-  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova aws-devstral aws-glm47
+.venv/bin/python -m beygir run stockholm-serial-delivery --split main \
+  --per-group 15 --serial --keep-waiting \
+  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova aws-devstral aws-glm47 aws-deepseek
 ~~~
 
-Bedrock sends native Converse requests and keeps the raw provider reply alongside normalized scoring fields. Scoring accepts a single JSON object with an optional Markdown code fence.
+Serial mode permits at most one in-flight request across all endpoints. Models can take turns while another endpoint cools down. Reuse the same run ID and arguments to resume. Bedrock sends native Converse requests and keeps the raw provider reply alongside normalized scoring fields. Scoring accepts a single JSON object with an optional Markdown code fence.
 
 ### Batch
 

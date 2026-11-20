@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import json
 import os
 from urllib.parse import parse_qs, quote, urlsplit
 
@@ -71,6 +72,15 @@ class BedrockClient:
                    "inferenceConfig": {"maxTokens": endpoint.max_tokens, "temperature": 0}}
         if endpoint.reasoning:
             request["additionalModelRequestFields"] = {"reasoning_effort": endpoint.reasoning}
+        if endpoint.thinking_disabled:
+            request["additionalModelRequestFields"] = {"thinking": {"type": "disabled"}}
+        if endpoint.structured_output:
+            spec = schema["json_schema"]
+            request["outputConfig"] = {"textFormat": {
+                "type": "json_schema", "structure": {"jsonSchema": {
+                    "name": spec["name"], "schema": json.dumps(spec["schema"]),
+                }},
+            }}
         return request
 
     async def complete(self, http, endpoint, route, payload) -> httpx.Response:
