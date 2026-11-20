@@ -7,7 +7,8 @@ from pathlib import Path
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
-from .batch import batch_directory, collect_batches, prepare_batches, submit_batches
+from .batch import (TERMINAL, batch_directory, collect_batches, load_batch_plan,
+                    prepare_batches, submit_batches)
 from .clients import client_for
 from .dataset import DEFAULT_ITEMS, SEED
 from .endpoints import DEFAULT_MODELS, catalog
@@ -87,6 +88,12 @@ def main() -> None:
         for endpoint in endpoints:
             client_for(endpoint).routes(endpoint)
         with exclusive_runner(args.db), RunStore(args.db) as store:
+            directory = batch_directory(args.db, args.run_id)
+            if (directory / "plan.json").exists():
+                jobs = load_batch_plan(directory)["jobs"]
+                if any(job.get("remote") and job["remote"].get("status") not in TERMINAL
+                       for job in jobs.values()):
+                    raise ValueError("A Bedrock batch is still active for this run. Collect it first or use a new run ID.")
             try:
                 asyncio.run(execute(store, args.run_id, args.dataset, args.split,
                                     endpoints, args.seed,

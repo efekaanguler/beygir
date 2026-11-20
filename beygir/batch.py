@@ -99,6 +99,7 @@ class BedrockBatchClient:
     def outputs(self, remote: dict):
         job = self.control.get_model_invocation_job(jobIdentifier=remote["arn"])
         status = job["status"]
+        remote["status"] = status
         print(f"{remote['arn'].rsplit('/', 1)[-1]}: {status}")
         if status not in TERMINAL:
             return
@@ -179,3 +180,4 @@ def collect_batches(store: RunStore, directory: Path, run_id: str) -> None:
             clients[job["region"]] = BedrockBatchClient(job["region"])
         rows = clients[job["region"]].outputs(job["remote"])
         print(f"{alias}: imported {import_rows(store, run_id, job, rows)} new records")
+        atomic_json(directory / "plan.json", plan)
