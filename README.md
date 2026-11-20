@@ -2,7 +2,7 @@
 
 **B**oard-game **E**valuation: **Y**ielding to **G**ame **I**dentity or **R**ules?
 
-Efe Kaan Güler developed BEYGIR for the 2026–27 Natural Language Processing course at Università degli Studi di Milano, Track 7 (LLMs and Board Games). The project studies how eight language models respond to a familiar game name and changes to its rules. [Course paper](BEYGIR.pdf) · [Reference paper, GAMEBoT](https://aclanthology.org/2025.acl-long.378/)
+Efe Kaan Güler developed BEYGIR for the 2026–27 Natural Language Processing course at Università degli Studi di Milano, Track 7 (LLMs and Board Games). The project studies how eight language models respond to a familiar game name and changes to its rules. [Course paper](report.pdf) · [Reference paper, GAMEBoT](https://aclanthology.org/2025.acl-long.378/)
 
 ## Experiment
 
@@ -111,7 +111,7 @@ The experiment guide also documents the earlier Groq protocol, a separate Bedroc
 | [`scripts/`](scripts/) | On-demand launcher for the final Bedrock protocol |
 | [`tests/`](tests/) | Rule, dataset, scoring, storage, and runner tests |
 | [`docs/`](docs/) | Detailed commands and provider notes |
-| [`BEYGIR.pdf`](BEYGIR.pdf) | Final report |
+| [`report.pdf`](report.pdf) | Final report |
 
 ## AI-use disclosure
 
