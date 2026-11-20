@@ -35,7 +35,9 @@ class ScoreTests(unittest.TestCase):
                 endpoint = catalog()[alias]
                 request = endpoint.payload("Test", {})
                 self.assertEqual(model_id, request["model"])
-                self.assertEqual({"only": [provider], "allow_fallbacks": False}, request["provider"])
+                self.assertEqual({"only": [provider], "allow_fallbacks": False,
+                                  "require_parameters": True}, request["provider"])
+                self.assertEqual({"type": "json_object"}, request["response_format"])
                 self.assertEqual("openrouter", configured_routes(endpoint)[0].label)
 
     def test_false_positive_and_malformed_have_distinct_effects(self):
