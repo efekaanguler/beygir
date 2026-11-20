@@ -1,0 +1,1 @@
+Bishops (B/b) move and attack with knight jumps. Knights (N/n) move and attack along unobstructed diagonals. Use this exchanged attack geometry for checks and king safety. The pieces keep their displayed identities. All other pieces follow the rules above.

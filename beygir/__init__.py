@@ -1,0 +1,1 @@
+"""BEYGIR board-game evaluation."""

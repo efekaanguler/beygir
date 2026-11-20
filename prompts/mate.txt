@@ -1,0 +1,1 @@
+Is there a legal move that checkmates the opponent immediately? If yes, give any one such move using its origin and destination (example: e2e4). Return only a JSON object with the Boolean "mate_exists" and the string or null "move". Use null for "move" if no mate exists.

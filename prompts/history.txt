@@ -1,0 +1,3 @@
+Both lines begin from the displayed board and side to move. Each entry is one player's turn, in origin-destination coordinates (example: e2e4).
+Apply line A and report the final occupants of the two requested squares using the board symbols, including "." for empty. Independently, replay line B and identify the first illegal move. Count from 1; use null if the whole line is legal.
+Return only a JSON object with "occupants" (an object keyed by the two requested square names) and "first_illegal" (an integer or null).

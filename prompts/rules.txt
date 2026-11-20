@@ -1,0 +1,7 @@
+Play on an 8-by-8 board with files a through h and ranks 1 through 8. White and Black alternate turns. Uppercase pieces are White; lowercase pieces are Black. The symbols K, Q, R, B, N and P mean king, queen, rook, bishop, knight and pawn. A dot means an empty square.
+
+The king moves one square in any direction. The queen slides horizontally, vertically or diagonally. The rook slides horizontally or vertically. The bishop slides diagonally. A knight jumps two squares along one axis and one along the other. Sliding pieces cannot pass through other pieces. Pawns move one square straight forward into an empty square (White toward rank 8; Black toward rank 1). A pawn on its starting rank (White 2, Black 7) may move two squares forward if both squares are empty. Pawns capture one square diagonally forward. Other pieces capture by moving to an enemy-occupied destination square, removing the enemy piece. A move cannot land on a friendly piece or capture the enemy king.
+
+An attacked king is in check. A move is legal only if it leaves the mover's king unattacked. A pinned enemy piece still attacks its ordinary attack squares. Checkmate requires check and no legal reply. Positions are selected so castling, en passant, promotion and draw rules are irrelevant to the requested answers.
+
+Apply the following rule to both players, including when checking legal replies.

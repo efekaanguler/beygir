@@ -1,0 +1,1 @@
+After applying king safety, if the player to move has any legal capture, every non-capturing move is illegal. If no legal capture exists, ordinary legal moves are allowed. Attacks and check are unchanged.
