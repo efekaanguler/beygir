@@ -153,10 +153,13 @@ async def api_attempt(client, store, endpoint, pool, run_id, item, name, rule, p
         except httpx.RequestError as error:
             body = {"error": type(error).__name__}
         finally:
-            if status == "transport_error":
+            if status in ("transport_error", "rate_limited"):
                 delay = pool.mark_transient_failure(route, response_headers)
-                print(f"{endpoint.alias}: {route.label} cooling down for {delay:g}s after a temporary error.",
+                print(f"{endpoint.alias}: {route.label} cooling down for at least {delay:g}s ({status}).",
                       flush=True)
+            elif status in ("endpoint_error", "route_error"):
+                print(f"{endpoint.alias}: {route.label} returned HTTP {http_status} ({status}); "
+                      "details saved in the attempt log.", flush=True)
             elif status == "response":
                 pool.mark_success(route)
             event[1] = charged
@@ -246,11 +249,17 @@ async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpo
             pool = RoutePool(routes[endpoint.alias], endpoint, store, follow)
             jobs = pending[endpoint.alias]
             planned = len(jobs)
-            finished = 0
+            total = len(all_jobs)
+            saved = sum((endpoint.model_id, item["id"], name, rule.value) in completed
+                        for item, name, rule in all_jobs)
+            initial_saved = saved
+            print(f"{endpoint.alias}: {saved}/{total} saved ({saved / total:.1%}); "
+                  f"{total - saved} remaining; {min(1 if serial else workers, planned)} workers.",
+                  flush=True)
             paused = False
 
             async def worker() -> None:
-                nonlocal finished, paused
+                nonlocal saved, paused
                 while jobs and not paused:
                     job = jobs.popleft()
                     item, name, rule = job
@@ -259,9 +268,10 @@ async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpo
                         status = await api_attempt(client, store, endpoint, pool, run_id,
                                                    item, name, rule, payload, request_gate)
                         if status == "response":
-                            finished += 1
-                            if finished == planned or finished % 25 == 0:
-                                print(f"{endpoint.alias}: {finished}/{planned} responses saved", flush=True)
+                            saved += 1
+                            if saved == initial_saved + planned or saved % 25 == 0:
+                                print(f"{endpoint.alias}: {saved}/{total} saved ({saved / total:.1%}); "
+                                      f"{total - saved} remaining.", flush=True)
                             break
                         if status in ("unavailable", "endpoint_error"):
                             paused = True

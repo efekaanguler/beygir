@@ -80,16 +80,14 @@ The eight models each receive 1,920 main requests. The catalogue and pilot plan 
 .venv/bin/python -m beygir.extended_dataset --output data/rebuilt-extended.jsonl
 cmp benchmark/extended_items.jsonl data/rebuilt-extended.jsonl
 
-# Start or resume strictly one request at a time.
-.venv/bin/python -m beygir run stockholm-extended-main --dataset benchmark/extended_items.jsonl \
-  --split main --serial --keep-waiting \
-  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova-lite aws-devstral aws-glm47 aws-deepseek
+# Start or resume with up to four on-demand requests per model.
+sh scripts/run-stockholm.sh
 
 # Follow overall, model, and task progress from a separate terminal.
 .venv/bin/python -m beygir status stockholm-extended-main --watch 10
 ~~~
 
-A short-term Bedrock token may expire before the strictly sequential run ends. Use the same run ID and request settings after replacing the token. Independent parallel on-demand calls use the same dataset and scoring. To run that mode, use --workers 4 in place of --serial. Cached responses are reusable in either mode.
+The launcher prevents idle sleep on macOS with caffeinate. Responses and failed attempts are committed to SQLite as they arrive. The runner waits through throttling and retries temporary errors, and exports a snapshot every 15 minutes. A permanent endpoint error pauses that model while the others continue. If the short-term Bedrock token expires, replace it in .env and restart the launcher with the existing run ID. Saved responses are reused. Scores and plots can also be rebuilt offline with `.venv/bin/python -m beygir report stockholm-extended-main`.
 
 The export adds all-moves-legal accuracy and legal prefix statistics for generation, and legality and first-illegal-index metrics for each audit length. The audit_by_length.png figure appears once there are positive and negative responses for at least one audit cell.
 

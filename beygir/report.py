@@ -64,5 +64,6 @@ def export_report(store: RunStore, directory: Path, run_id: str) -> Path:
     temp.replace(directory / "raw_attempts.jsonl")
     (directory / "run_spec.json").write_text(encode(spec) + "\n", encoding="utf-8")
     write_figures(directory, metrics, pairs, spec)
-    print(f"{run_id}: {len(completed)}/{len(scores)} responses saved; reports in {directory}")
+    print(f"{run_id}: {len(completed):,}/{len(scores):,} saved ({len(completed) / len(scores):.1%}); "
+          f"{len(scores) - len(completed):,} remaining; reports in {directory}", flush=True)
     return directory

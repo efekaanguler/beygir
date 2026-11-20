@@ -41,16 +41,19 @@ def show_progress(store: RunStore, run_id: str, refresh: int | None) -> None:
         phase = "complete" if saved == planned else "ready or waiting" if not saved else "collecting or paused"
         if refresh and sys.stdout.isatty():
             print("\033[2J\033[H", end="")
-        print(f"{run_id}: {saved:,}/{planned:,} saved ({saved / planned:.1%}) | {phase}")
+        print(f"{run_id}: {saved:,}/{planned:,} saved ({saved / planned:.1%}) | "
+              f"{planned - saved:,} remaining | {phase}")
         print("\nModels")
         for row in models:
             average = "—" if row["avg_tokens"] is None else f"{row['avg_tokens']:.0f} tokens/reply"
-            print(f"{row['model']:<31} {row['saved']:>5}/{row['planned']:<5}  "
+            print(f"{row['model']:<31} {row['saved']:>5}/{row['planned']:<5} "
+                  f"({row['saved'] / row['planned']:>6.1%})  {row['planned'] - row['saved']:>5} remaining  "
                   f"{row['last_hour']:>4} last hour  {row['attempts'] - row['saved']:>3} retries/errors  {average}")
         print("\nTasks")
         for row in tasks:
             print(f"{row['task']:<15} {row['saved']:>5}/{row['planned']:<5}"
-                  f" ({row['saved'] / row['planned']:>6.1%}) from {row['items']} items")
+                  f" ({row['saved'] / row['planned']:>6.1%})  "
+                  f"{row['planned'] - row['saved']:>5} remaining from {row['items']} items")
         if not refresh or saved == planned:
             return
         try:
@@ -146,6 +149,10 @@ def main() -> None:
             except KeyboardInterrupt:
                 print("\nInterrupted. Completed responses are saved and can be resumed.")
             write_report(store, args.db, args.run_id)
+            if args.max_new_per_model is None and any(
+                row["saved"] < row["planned"] for row in store.progress(args.run_id)
+            ):
+                raise ValueError("Run incomplete. Fix the reported blocker and resume with the same run ID.")
     except (ValueError, OSError, HTTPError, BotoCoreError, ClientError) as error:
         parser.exit(2, f"beygir: {error}\n")
 
