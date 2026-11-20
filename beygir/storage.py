@@ -163,3 +163,22 @@ class RunStore:
                  **totals.get(endpoint["model_id"], {"attempts": 0, "saved": 0,
                                                     "avg_tokens": None, "last_hour": 0})}
                 for endpoint in spec["endpoints"]]
+
+    def task_progress(self, run_id: str) -> list[dict]:
+        run = self.db.execute("SELECT spec FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise ValueError(f"Unknown run: {run_id}")
+        spec = json.loads(run["spec"])
+        conditions = len(spec["names"]) * len(spec["rules"]) * len(spec["endpoints"])
+        items = self.db.execute("""
+            SELECT json_extract(item, '$.task') AS task, COUNT(*) AS n
+            FROM items WHERE run_id = ? GROUP BY task ORDER BY task
+        """, (run_id,))
+        replies = self.db.execute("""
+            SELECT json_extract(items.item, '$.task') AS task, COUNT(*) AS saved
+            FROM attempts JOIN items ON items.run_id = attempts.run_id AND items.item_id = attempts.item_id
+            WHERE attempts.run_id = ? AND attempts.status = 'response' GROUP BY task
+        """, (run_id,))
+        counts = {row["task"]: row["saved"] for row in replies}
+        return [{"task": row["task"], "items": row["n"], "planned": row["n"] * conditions,
+                 "saved": counts.get(row["task"], 0)} for row in items]

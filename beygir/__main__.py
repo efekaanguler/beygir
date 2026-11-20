@@ -2,6 +2,8 @@
 
 import argparse
 import asyncio
+import sys
+import time
 from pathlib import Path
 
 from httpx import HTTPError
@@ -28,6 +30,36 @@ def positive_int(text: str) -> int:
     return value
 
 
+def show_progress(store: RunStore, run_id: str, refresh: int | None) -> None:
+    while True:
+        with store.db:
+            store.db.execute("BEGIN")
+            models = store.progress(run_id)
+            tasks = store.task_progress(run_id)
+        saved = sum(row["saved"] for row in models)
+        planned = sum(row["planned"] for row in models)
+        phase = "complete" if saved == planned else "ready or waiting" if not saved else "collecting or paused"
+        if refresh and sys.stdout.isatty():
+            print("\033[2J\033[H", end="")
+        print(f"{run_id}: {saved:,}/{planned:,} saved ({saved / planned:.1%}) | {phase}")
+        print("\nModels")
+        for row in models:
+            average = "—" if row["avg_tokens"] is None else f"{row['avg_tokens']:.0f} tokens/reply"
+            print(f"{row['model']:<31} {row['saved']:>5}/{row['planned']:<5}  "
+                  f"{row['last_hour']:>4} last hour  {row['attempts'] - row['saved']:>3} retries/errors  {average}")
+        print("\nTasks")
+        for row in tasks:
+            print(f"{row['task']:<15} {row['saved']:>5}/{row['planned']:<5}"
+                  f" ({row['saved'] / row['planned']:>6.1%}) from {row['items']} items")
+        if not refresh or saved == planned:
+            return
+        try:
+            sys.stdout.flush()
+            time.sleep(refresh)
+        except KeyboardInterrupt:
+            return
+
+
 def main() -> None:
     load_dotenv(".env")
     parser = argparse.ArgumentParser(description=__doc__)
@@ -35,6 +67,8 @@ def main() -> None:
     run = commands.add_parser("run", help="start or resume a benchmark run")
     report = commands.add_parser("report", help="rebuild CSV and JSONL exports without API calls")
     status = commands.add_parser("status", help="show live progress from the local database")
+    status.add_argument("--watch", nargs="?", type=positive_int, const=10, metavar="SECONDS",
+                        help="refresh the status until completion or Ctrl-C")
     prepare = commands.add_parser("batch-prepare", help="write offline Bedrock JSONL and a record manifest")
     submit = commands.add_parser("batch-submit", help="upload and submit a prepared Bedrock batch")
     collect = commands.add_parser("batch-collect", help="import completed Bedrock batch outputs")
@@ -68,12 +102,7 @@ def main() -> None:
             return
         if args.command == "status":
             with RunStore(args.db) as store:
-                rows = store.progress(args.run_id)
-            print(f"{args.run_id}: {sum(row['saved'] for row in rows)}/{sum(row['planned'] for row in rows)} saved")
-            for row in rows:
-                average = "—" if row["avg_tokens"] is None else f"{row['avg_tokens']:.0f} tokens/reply"
-                print(f"{row['model']:<26} {row['saved']:>4}/{row['planned']:<4}  "
-                      f"{row['last_hour']:>3} last hour  {row['attempts'] - row['saved']:>3} retries/errors  {average}")
+                show_progress(store, args.run_id, args.watch)
             return
         if args.command == "batch-check":
             check_batch(batch_directory(args.db, args.run_id))

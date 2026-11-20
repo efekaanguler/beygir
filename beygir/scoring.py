@@ -1,14 +1,20 @@
 """Score structured answers against the manifest without contacting an API."""
 
 import json
+import re
 from itertools import combinations
 
 import chess
+
+from .extended_dataset import AUDIT_LENGTHS
+from .rules import Position, Rule
 
 STANDARD = "standard"
 TASK_METRICS = {
     "mate": ("classification_correct", "mate_move_correct"),
     "history": ("classification_correct", "state_exact", "first_index_correct"),
+    "play5": ("line_legal",),
+    **{task: ("classification_correct", "first_index_correct") for task in AUDIT_LENGTHS},
 }
 
 
@@ -37,6 +43,51 @@ def parse_object(body) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+
+
+def score_generated_line(item: dict, rule: str, answer: dict, received: bool) -> dict:
+    moves = answer.get("moves")
+    proposed = moves if isinstance(moves, list) else []
+    length = item["length"]
+    valid_format = (len(proposed) == length
+                    and all(isinstance(move, str) and re.fullmatch(r"[a-h][1-8][a-h][1-8]", move)
+                            for move in proposed))
+    index = None
+    if proposed:
+        position = Position.from_board(chess.Board(item["fen"]), Rule(rule), exclude_special_moves=True)
+        index, _ = position.replay(proposed[:length])
+    prefix = index - 1 if index is not None else min(len(proposed), length)
+    return {
+        "format_valid": valid_format if received else None,
+        "returned_line": json.dumps(moves),
+        "line_legal": valid_format and index is None if received else None,
+        "legal_prefix": prefix if received else None,
+        "first_index_in_generated_line": index if received else None,
+        "expected_length": length,
+    }
+
+
+def score_audit_line(item: dict, rule: str, answer: dict, received: bool) -> dict:
+    gold = item["gold"]["first_illegal"]
+    expected = gold[rule]
+    all_legal = answer.get("all_legal")
+    predicted = not all_legal if type(all_legal) is bool else None
+    index = answer.get("first_illegal")
+    index_valid = ("first_illegal" in answer
+                   and (index is None or type(index) is int and 1 <= index <= item["length"]))
+    consistent = bool(type(all_legal) is bool and index_valid and (index is None) == all_legal)
+    return {
+        "gold_class": expected is not None, "prediction": predicted,
+        "gold_index": expected, "returned_index": index if index_valid else None,
+        "classification_correct": predicted == (expected is not None) if received else None,
+        "first_index_correct": index_valid and index == expected if received else None,
+        "format_valid": consistent if received else None,
+        "standard_only_eligible": expected != gold[STANDARD],
+        "standard_only_error": index_valid and index == gold[STANDARD] and predicted == (gold[STANDARD] is not None)
+        if received else None,
+    }
+
+
 def scored_item(item, model, name, rule, received, body) -> dict:
     row = {
         "model": model,
@@ -48,6 +99,10 @@ def scored_item(item, model, name, rule, received, body) -> dict:
         "received": received,
     }
     answer = parse_object(body)
+    if item["task"] == "play5":
+        return {**row, **score_generated_line(item, rule, answer, received)}
+    if item["task"] in AUDIT_LENGTHS:
+        return {**row, **score_audit_line(item, rule, answer, received)}
     if item["task"] == "mate":
         gold = item["gold"][rule]
         predicted = answer.get("mate_exists")
@@ -112,6 +167,15 @@ def ratio(numerator: int, denominator: int):
 
 def summarize(rows: list[dict]) -> dict:
     responses = [row for row in rows if row["received"]]
+    result = {"planned": len(rows), "responses": len(responses),
+              "missing": len(rows) - len(responses),
+              "format_errors": sum(not row["format_valid"] for row in responses)}
+    if rows[0]["task"] == "play5":
+        return {**result,
+                "all_moves_legal_accuracy": ratio(sum(row["line_legal"] for row in responses), len(responses)),
+                "mean_legal_prefix": ratio(sum(row["legal_prefix"] for row in responses), len(responses)),
+                "legal_prefix_fraction": ratio(sum(row["legal_prefix"] for row in responses),
+                                               sum(row["expected_length"] for row in responses))}
     valid = [row for row in responses if row["prediction"] is not None]
     tp = sum(row["prediction"] and row["gold_class"] for row in valid)
     fp = sum(row["prediction"] and not row["gold_class"] for row in valid)
@@ -123,10 +187,7 @@ def summarize(rows: list[dict]) -> dict:
     sensitivity_with_errors = ratio(tp, total_positive)
     specificity_with_errors = ratio(tn, total_negative)
     standard_only = [row for row in responses if row["standard_only_eligible"]]
-    result = {
-        "planned": len(rows), "responses": len(responses),
-        "missing": len(rows) - len(responses),
-        "format_errors": sum(not row["format_valid"] for row in responses),
+    result.update({
         "scorable_classifications": len(valid),
         "actual_positive": total_positive, "actual_negative": total_negative,
         "tp": tp, "fp": fp, "fn": fn, "tn": tn,
@@ -136,7 +197,7 @@ def summarize(rows: list[dict]) -> dict:
         if sensitivity_with_errors is not None and specificity_with_errors is not None else None,
         "standard_only_n": len(standard_only),
         "standard_only_rate": ratio(sum(row["standard_only_error"] for row in standard_only), len(standard_only)),
-    }
+    })
     if rows[0]["task"] == "mate":
         eligible = [row for row in responses if row["mate_eligible"]]
         common = [row for row in eligible if row["common_mate"]]
@@ -148,10 +209,13 @@ def summarize(rows: list[dict]) -> dict:
         )
     else:
         illegal = [row for row in responses if row["gold_class"]]
+        if rows[0]["task"] == "history":
+            result.update(
+                state_exact_accuracy=ratio(sum(row["state_exact"] for row in responses), len(responses)),
+                square_accuracy=ratio(sum(row["square_hits"] for row in responses),
+                                      sum(row["square_total"] for row in responses)),
+            )
         result.update(
-            state_exact_accuracy=ratio(sum(row["state_exact"] for row in responses), len(responses)),
-            square_accuracy=ratio(sum(row["square_hits"] for row in responses),
-                                  sum(row["square_total"] for row in responses)),
             first_index_accuracy=ratio(sum(row["first_index_correct"] for row in responses), len(responses)),
             first_index_illegal_n=len(illegal),
             first_index_illegal_accuracy=ratio(sum(row["first_index_correct"] for row in illegal), len(illegal)),

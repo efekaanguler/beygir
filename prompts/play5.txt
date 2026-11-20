@@ -1,0 +1,1 @@
+Generate exactly five consecutive half-moves starting with the indicated side, alternating both sides. Give coordinate moves such as e2e4. Choose any sequence in which every move is legal on the board that results from the previous moves. Return only a JSON object with a "moves" array containing exactly five strings in order.

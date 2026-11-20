@@ -1,6 +1,7 @@
 """Generate publication-ready summary figures from derived records."""
 
 from pathlib import Path
+from math import ceil
 
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
@@ -68,7 +69,7 @@ def write_figures(directory: Path, metrics: list[dict], pairs: list[dict], spec:
         figure.savefig(directory / "matched_accuracy.png", dpi=170)
 
     variants = [rule for rule in rules if rule != "standard"]
-    values = {(row["model"], row["task"], row["rule"], row["name"]): row["standard_only_rate"]
+    values = {(row["model"], row["task"], row["rule"], row["name"]): row.get("standard_only_rate")
               for row in metrics if row["scope"] == "all" and row["rule"] in variants}
     if any(value is not None for value in values.values()):
         figure, axes = new_figure(2, list(model_names))
@@ -86,3 +87,40 @@ def write_figures(directory: Path, metrics: list[dict], pairs: list[dict], spec:
                             axis.scatter(j + offset, value, s=14, color=COLORS[name], zorder=3)
         legend(figure)
         figure.savefig(directory / "standard_rule_errors.png", dpi=170)
+
+    write_length_figure(directory, metrics, model_names, rules)
+
+
+def write_length_figure(directory, metrics, model_names, rules):
+    horizons = {"audit5": 5, "audit20": 20, "audit50": 50}
+    values = {(row["model"], row["name"], row["rule"], horizons[row["task"]]): row["balanced_accuracy"]
+              for row in metrics if row["task"] in horizons and row["scope"] == "all"}
+    if not any(value is not None for value in values.values()):
+        return
+    columns = min(4, len(model_names))
+    rows = ceil(len(model_names) / columns)
+    figure = Figure(figsize=(3.4 * columns, 2.8 * rows + 0.6), layout="constrained")
+    FigureCanvasAgg(figure)
+    axes = figure.subplots(rows, columns, squeeze=False, sharey=True)
+    markers = dict(zip(rules, ("o", "s", "^")))
+    for axis, (model, alias) in zip(axes.flat, model_names.items()):
+        axis.set_title(alias)
+        axis.set_ylim(0, 1.05)
+        axis.set_xticks(tuple(horizons.values()))
+        axis.set_xlabel("Half-moves")
+        axis.yaxis.set_major_formatter(PercentFormatter(1))
+        axis.grid(axis="y", alpha=0.2)
+        for name, color in COLORS.items():
+            for rule, marker in markers.items():
+                points = [(length, values.get((model, name, rule, length))) for length in horizons.values()]
+                points = [(length, value) for length, value in points if value is not None]
+                if points:
+                    axis.plot(*zip(*points), marker=marker, color=color, linewidth=1.1)
+    for axis in list(axes.flat)[len(model_names):]:
+        axis.set_visible(False)
+    axes[0][0].set_ylabel("Balanced accuracy")
+    handles = [Line2D([], [], color=color, label=name) for name, color in COLORS.items()]
+    handles += [Line2D([], [], linestyle="none", marker=marker, color="#525252", label=LABELS[rule])
+                for rule, marker in markers.items()]
+    figure.legend(handles=handles, loc="outside upper center", ncols=len(handles), frameon=False)
+    figure.savefig(directory / "audit_by_length.png", dpi=170)

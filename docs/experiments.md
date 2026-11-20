@@ -67,6 +67,32 @@ The delivery run is planned for 120 balanced items with 15 items per sampling gr
 
 Serial mode permits at most one in-flight request across all endpoints. Models can take turns while another endpoint cools down. Reuse the same run ID and arguments to resume. Bedrock sends native Converse requests and keeps the raw provider reply alongside normalized scoring fields. Scoring accepts a single JSON object with an optional Markdown code fence.
 
+### Extended legality study
+
+The frozen benchmark in benchmark/extended_items.jsonl contains 320 main items and 21 separate pilot items. It retains 60 mate-in-one and 60 short-history items, and adds 50 items in each of four tasks: generate five legal half-moves, then audit a supplied line at 5, 20 or 50 half-moves. One half-move is one side's turn. In the generation task a valid line may differ from the private reference line. The evaluator applies each proposed move and scores the exact five-move success rate and the legal prefix length.
+
+For each audit length, 20 lines are legal under all three rulesets, 10 contain an illegal move under all three, 10 are illegal only under mandatory capture and 10 are illegal only under the bishop–knight swap. Prompts provide the same starting board and line across all six conditions. Rule-specific ground truth identifies the first illegal move. The detailed rule text defines piece movement, attacks, pins, check and the scope of special moves. The independently seeded length groups support a descriptive comparison of audit difficulty.
+
+The eight models each receive 1,920 main requests. The catalogue and pilot plan are the same as in the sequential experiment. The extended run uses its own ID and request fingerprint.
+
+~~~sh
+# Rebuild the frozen extended dataset without connecting to a model.
+.venv/bin/python -m beygir.extended_dataset --output data/rebuilt-extended.jsonl
+cmp benchmark/extended_items.jsonl data/rebuilt-extended.jsonl
+
+# Start or resume strictly one request at a time.
+.venv/bin/python -m beygir run stockholm-extended-main --dataset benchmark/extended_items.jsonl \
+  --split main --serial --keep-waiting \
+  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova-lite aws-devstral aws-glm47 aws-deepseek
+
+# Follow overall, model, and task progress from a separate terminal.
+.venv/bin/python -m beygir status stockholm-extended-main --watch 10
+~~~
+
+A short-term Bedrock token may expire before the strictly sequential run ends. Use the same run ID and request settings after replacing the token. Independent parallel on-demand calls use the same dataset and scoring. To run that mode, use --workers 4 in place of --serial. Cached responses are reusable in either mode.
+
+The export adds all-moves-legal accuracy and legal prefix statistics for generation, and legality and first-illegal-index metrics for each audit length. The audit_by_length.png figure appears once there are positive and negative responses for at least one audit cell.
+
 ### Batch
 
 Use a unique run ID for a batch. Preparation creates one JSONL input per model under runs/. Batch submission and automated collection use standard AWS SDK credentials with S3 access and Bedrock job permissions. Configure AWS_PROFILE if needed, and set BEDROCK_BATCH_BUCKET to an existing Stockholm bucket and BEDROCK_BATCH_ROLE_ARN to a Bedrock batch service role. The submitting identity needs permission to pass that role. Limit the role’s S3 permissions to the relevant input and output paths.

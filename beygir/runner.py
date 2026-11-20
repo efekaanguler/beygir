@@ -15,7 +15,7 @@ import httpx
 
 from .clients import client_for
 from .endpoints import Endpoint, Route
-from .prompts import NAMES, fingerprint, load_templates, render, response_format
+from .prompts import NAMES, fingerprint, render, response_format, templates_for
 from .quota import Quota, retry_delay
 from .rules import Rule
 from .storage import RunStore
@@ -196,7 +196,7 @@ async def pick_routes(client: httpx.AsyncClient, endpoints: list[Endpoint]):
 def prepare_run(store: RunStore, run_id: str, dataset: Path, split: str, endpoints: list[Endpoint],
                 seed: int, per_group: int | None = None):
     items = load_items(dataset, split)
-    templates = load_templates()
+    templates = templates_for(items)
     if per_group is not None:
         groups = {}
         for item in items:

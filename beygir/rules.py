@@ -33,27 +33,32 @@ def movement_board(board: chess.Board, rule: Rule) -> chess.Board:
 class Position:
     rule: Rule
     board: chess.Board
+    exclude_special_moves: bool = False
 
     @classmethod
-    def from_board(cls, board: chess.Board, rule: Rule) -> "Position":
+    def from_board(cls, board: chess.Board, rule: Rule, *, exclude_special_moves: bool = False) -> "Position":
         if board.castling_rights or board.ep_square is not None:
             raise UnsupportedPosition("Castling rights and en passant targets are excluded")
         encoded = movement_board(board, rule)
         if not encoded.is_valid():
             raise UnsupportedPosition(f"Invalid starting board under {rule.value}")
-        return cls(rule, encoded)
+        return cls(rule, encoded, exclude_special_moves)
 
     def legal_moves(self) -> tuple[chess.Move, ...]:
         moves = tuple(self.board.legal_moves)
-        if any(move.promotion or self.board.is_en_passant(move) for move in moves):
-            raise UnsupportedPosition("Promotion and en passant are excluded")
+        ordinary = tuple(move for move in moves
+                         if not (move.promotion or self.board.is_en_passant(move) or self.board.is_castling(move)))
+        if self.exclude_special_moves:
+            moves = ordinary
+        elif len(ordinary) != len(moves):
+            raise UnsupportedPosition("Promotion and en passant are outside this position's evaluation")
         if self.rule is Rule.CAPTURE:
             captures = tuple(move for move in moves if self.board.is_capture(move))
             return captures or moves
         return moves
 
     def copy(self) -> "Position":
-        return Position(self.rule, self.board.copy(stack=False))
+        return Position(self.rule, self.board.copy(stack=False), self.exclude_special_moves)
 
     def piece_at(self, square: str) -> str:
         piece = self.board.piece_at(chess.parse_square(square))
@@ -77,15 +82,21 @@ class Position:
         """Return the one-based first illegal index and the last valid state."""
         current = self.copy()
         for index, text in enumerate(moves, start=1):
-            move = chess.Move.from_uci(text)
+            if type(text) is not str:
+                return index, current
+            try:
+                move = chess.Move.from_uci(text)
+            except ValueError:
+                return index, current
             if move not in current.legal_moves():
                 return index, current
             current.board.push(move)
         return None, current
 
 
-def playable_positions(board: chess.Board) -> dict[Rule, Position]:
-    positions = {rule: Position.from_board(board, rule) for rule in Rule}
+def playable_positions(board: chess.Board, *, exclude_special_moves: bool = False) -> dict[Rule, Position]:
+    positions = {rule: Position.from_board(board, rule, exclude_special_moves=exclude_special_moves)
+                 for rule in Rule}
     if any(not position.legal_moves() for position in positions.values()):
         raise UnsupportedPosition("An initial board must allow play under all rules")
     return positions

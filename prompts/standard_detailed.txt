@@ -1,0 +1,1 @@
+Use the ordinary movement and king-safety rules on every turn. A player may choose any legal move, whether it captures a piece or moves to an empty square.

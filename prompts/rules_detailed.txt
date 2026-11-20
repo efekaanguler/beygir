@@ -1,0 +1,20 @@
+Board and turns
+
+The board has files a through h from left to right and ranks 1 through 8 from White's side to Black's side. The diagram shows rank 8 at the top. K, Q, R, B, N, P are the White king, queen, rook, bishop, knight and pawn. Lowercase letters are the corresponding Black pieces. A dot is an empty square. The indicated side moves first, then the sides alternate. A half-move (ply) is one turn by one side. The move e2e4 means moving the piece on e2 to e4.
+
+Ordinary movement
+
+- King: one square horizontally, vertically or diagonally.
+- Queen: any number of squares in one straight horizontal, vertical or diagonal direction.
+- Rook: any number of squares horizontally or vertically.
+- Bishop: any number of squares diagonally.
+- Knight: two squares along one axis and one along the other, as a single jump. Intervening pieces do not block it.
+- Pawn: White advances toward rank 8 and Black toward rank 1. A pawn moves one square forward into an empty square. From White rank 2 or Black rank 7 it may move two squares forward if both squares are empty. It captures an opposing piece one square diagonally forward. It cannot capture straight ahead or move diagonally into an empty square.
+
+Sliding pieces stop at the first occupied square. They may capture there if the piece is an opponent. A move cannot land on a friendly piece. On a capture, remove the captured piece and put the mover on the destination. After every legal move, clear the origin and update the board before considering the next turn.
+
+Check, pins and mate
+
+A square can be attacked by an opposing pawn's diagonal capture, a knight's jump, a king's adjacent move or a clear sliding ray. A pawn's straight advances do not attack squares. A pinned opposing piece still attacks squares according to its attack geometry. You may never leave your own king attacked. If already in check, respond by moving the king to an unattacked square, capturing the checking piece, or blocking a sliding attack when possible. The kings cannot stand next to one another. The opposing king is never captured. Checkmate means that the side to move is in check and has no legal response. A side with no legal response and no check is stalemated.
+
+For these tasks, castling, en passant, and promotion moves are outside the move set. A pawn cannot reach the last rank within these tasks. Ignore draw claims, repetition, move-count draws and insufficient-material adjudication. Test the variant rule on every turn and for every reply to a possible mate.
