@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .figures import write_figures
 from .scoring import name_effects, paired, scored_item, summarize
-from .storage import RunStore, encode, output_directory
+from .storage import RunStore, encode, exclusive_runner, output_directory
 
 
 def write_csv(path: Path, rows: list[dict]) -> None:
@@ -22,9 +22,16 @@ def write_csv(path: Path, rows: list[dict]) -> None:
 
 def write_report(store: RunStore, database: Path, run_id: str) -> Path:
     directory = output_directory(database, run_id)
-    directory.mkdir(parents=True, exist_ok=True)
-    spec, items = store.load(run_id)
-    completed = store.completed(run_id)
+    with exclusive_runner(directory / "report"):
+        return export_report(store, directory, run_id)
+
+
+def export_report(store: RunStore, directory: Path, run_id: str) -> Path:
+    store.db.execute("BEGIN")
+    with store.db:
+        spec, items = store.load(run_id)
+        completed = store.completed(run_id)
+        attempts = list(store.attempts(run_id))
     scores = []
     conditions = list(itertools.product(spec["names"], spec["rules"]))
     condition_groups = defaultdict(list)
@@ -52,7 +59,7 @@ def write_report(store: RunStore, database: Path, run_id: str) -> Path:
     write_csv(directory / "name_effects.csv", effects)
     temp = directory / "raw_attempts.jsonl.tmp"
     with temp.open("w", encoding="utf-8") as handle:
-        for attempt in store.attempts(run_id):
+        for attempt in attempts:
             handle.write(encode(attempt) + "\n")
     temp.replace(directory / "raw_attempts.jsonl")
     (directory / "run_spec.json").write_text(encode(spec) + "\n", encoding="utf-8")

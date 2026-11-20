@@ -134,9 +134,32 @@ class RunStore:
             yield {**dict(row), "request": json.loads(row["request"]),
                    "response": json.loads(row["response"])}
 
-    def recent_usage(self, model: str, quota_group: str, since: float) -> list[tuple[float, int]]:
-        return [(row["started"], row["charged_tokens"]) for row in self.db.execute("""
+    def recent_usage(self, model: str, quota_group: str, since: float,
+                     route_labels: list[str] | None = None) -> list[tuple[float, int]]:
+        labels = route_labels or []
+        placeholders = ",".join("?" for _ in labels) or "NULL"
+        return [(row["started"], row["charged_tokens"]) for row in self.db.execute(f"""
             SELECT started, charged_tokens FROM attempts
-            WHERE model = ? AND quota_group = ? AND started > ?
+            WHERE model = ? AND started > ? AND (quota_group = ? OR route IN ({placeholders}))
             ORDER BY started
-        """, (model, quota_group, since))]
+        """, (model, since, quota_group, *labels))]
+
+    def progress(self, run_id: str) -> list[dict]:
+        run = self.db.execute("SELECT spec FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise ValueError(f"Unknown run: {run_id}")
+        spec = json.loads(run["spec"])
+        size = self.db.execute("SELECT COUNT(*) FROM items WHERE run_id = ?", (run_id,)).fetchone()[0]
+        planned = size * len(spec["names"]) * len(spec["rules"])
+        rows = self.db.execute("""
+            SELECT model, COUNT(*) AS attempts,
+                SUM(CASE WHEN status = 'response' THEN 1 ELSE 0 END) AS saved,
+                AVG(CASE WHEN status = 'response' THEN charged_tokens END) AS avg_tokens,
+                SUM(CASE WHEN status = 'response' AND started >= ? THEN 1 ELSE 0 END) AS last_hour
+            FROM attempts WHERE run_id = ? GROUP BY model
+        """, (time.time() - 3600, run_id))
+        totals = {row["model"]: dict(row) for row in rows}
+        return [{"model": endpoint["model_id"], "planned": planned,
+                 **totals.get(endpoint["model_id"], {"attempts": 0, "saved": 0,
+                                                    "avg_tokens": None, "last_hour": 0})}
+                for endpoint in spec["endpoints"]]

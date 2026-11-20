@@ -17,14 +17,14 @@ Use the local .env for credentials. The numbered Groq keys rotate across request
 # Eight held-out samples, 144 scheduled calls across three Groq models
 .venv/bin/python -m beygir run pilot --split pilot
 
-# 400 samples, 7,200 scheduled calls across the same three models
-.venv/bin/python -m beygir run main --split main
+# Main experiment: wait across quota windows and resume any saved run
+.venv/bin/python -m beygir run main --split main --keep-waiting
 
-# Run the same command again after a pause to resume
-.venv/bin/python -m beygir run main --split main
+# Inspect progress while the runner is active, without API calls
+.venv/bin/python -m beygir status main
 ~~~
 
-The main run spans multiple free-tier quota windows. For a small live check, use a separate run ID with --max-new-per-model 3. Short checks draw from the pilot sample and are not study results. The two GPT-OSS endpoints use low reasoning effort and Qwen uses reasoning disabled. The three Groq endpoints use strict output schemas, with the same schema across all conditions for a given item. The schemas constrain the response shape and do not provide candidate moves or labels. A model response that is invalid or truncated is retained and scored for format and task performance.
+The main run spans multiple free-tier quota windows. Keep-waiting mode waits until an account is eligible for further calls, pauses a job for five minutes after three failed attempts, and writes partial reports every 15 minutes. Two independent Groq organizations can run in parallel within their own request and token allowances. A machine running the experiment must remain awake and connected. On macOS, prefix the run command with caffeinate -i to prevent idle sleep. Use the same run ID to resume after an interruption. For a small live check, use a separate run ID with --max-new-per-model 3. Short checks draw from the pilot sample and are not study results. The two GPT-OSS endpoints use low reasoning effort and Qwen uses reasoning disabled. The three Groq endpoints use strict output schemas, with the same schema across all conditions for a given item. The schemas constrain the response shape and do not provide candidate moves or labels. A model response that is invalid or truncated is retained and scored for format and task performance.
 
 Groq’s allam-2-7b can also be selected explicitly with --models allam.
 

@@ -7,6 +7,8 @@ import json
 import random
 import time
 from collections import deque
+from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
 import httpx
@@ -19,6 +21,8 @@ from .storage import RunStore
 
 MAX_QUOTA_WAIT = 90
 RETRIES = 3
+BATCH_COOLDOWN = 300
+SNAPSHOT_INTERVAL = 900
 
 
 def load_items(path: Path, split: str) -> list[dict]:
@@ -30,14 +34,20 @@ def load_items(path: Path, split: str) -> list[dict]:
 
 
 class RoutePool:
-    def __init__(self, routes: list[Route], endpoint: Endpoint, store: RunStore):
+    def __init__(self, routes: list[Route], endpoint: Endpoint, store: RunStore, follow: bool = False):
         self.routes = deque(routes)
+        self.alias = endpoint.alias
+        self.follow = follow
+        self.next_notice = 0.0
         self.disabled = set()
         self.retry_at = {}
         self.transient_failures = {}
         self.token_estimate = endpoint.token_estimate
         self.groups = {
-            group: Quota(endpoint.limits, store.recent_usage(endpoint.model_id, group, time.time() - 86_400))
+            group: Quota(endpoint.limits, store.recent_usage(
+                endpoint.model_id, group, time.time() - 86_400,
+                [route.label for route in routes if route.quota_group == group],
+            ))
             for group in {route.quota_group for route in routes}
         }
 
@@ -71,9 +81,13 @@ class RoutePool:
                     return route, quota, quota.reserve(self.token_estimate, now)
                 delays.append(delay)
             earliest = min(delays, default=float("inf"))
-            if time.monotonic() + earliest > deadline:
+            if earliest == float("inf") or (not self.follow and monotonic_now + earliest > deadline):
                 return None
-            await asyncio.sleep(earliest)
+            if self.follow and earliest > MAX_QUOTA_WAIT and monotonic_now >= self.next_notice:
+                print(f"{self.alias}: all routes waiting; next eligible in about {earliest / 60:.0f} min.",
+                      flush=True)
+                self.next_notice = monotonic_now + SNAPSHOT_INTERVAL
+            await asyncio.sleep(min(earliest, SNAPSHOT_INTERVAL) if self.follow else earliest)
 
 
 def response_tokens(body, estimate: int) -> int:
@@ -177,7 +191,8 @@ async def pick_routes(client: httpx.AsyncClient, endpoints: list[Endpoint]):
 
 
 async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpoints: list[Endpoint],
-                  seed: int, workers: int, max_new: int | None) -> None:
+                  seed: int, workers: int, max_new: int | None, *,
+                  follow: bool = False, snapshot: Callable[[], object] | None = None) -> None:
     items = load_items(dataset, split)
     templates = load_templates()
     spec = {
@@ -205,7 +220,7 @@ async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpo
         routes = await pick_routes(client, needed)
 
         async def run_endpoint(endpoint: Endpoint) -> None:
-            pool = RoutePool(routes[endpoint.alias], endpoint, store)
+            pool = RoutePool(routes[endpoint.alias], endpoint, store, follow)
             jobs = pending[endpoint.alias]
             planned = len(jobs)
             finished = 0
@@ -214,7 +229,8 @@ async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpo
             async def worker() -> None:
                 nonlocal finished, paused
                 while jobs and not paused:
-                    item, name, rule = jobs.popleft()
+                    job = jobs.popleft()
+                    item, name, rule = job
                     payload = endpoint.payload(render(item, name, rule, templates), response_format(item))
                     for _ in range(RETRIES):
                         status = await api_attempt(client, store, endpoint, pool, run_id,
@@ -228,12 +244,33 @@ async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpo
                             paused = True
                             print(f"{endpoint.alias}: paused ({status}); pending items can be resumed.", flush=True)
                             break
+                    else:
+                        if follow:
+                            print(f"{endpoint.alias}: retry batch exhausted; retrying the item after a 5 min cooldown.",
+                                  flush=True)
+                            await asyncio.sleep(BATCH_COOLDOWN)
+                            jobs.append(job)
 
             async with asyncio.TaskGroup() as group:
                 for _ in range(min(workers, planned)):
                     group.create_task(worker())
 
-        async with asyncio.TaskGroup() as group:
-            for endpoint in needed:
-                if endpoint.alias in routes:
-                    group.create_task(run_endpoint(endpoint))
+        async def snapshots() -> None:
+            while True:
+                await asyncio.sleep(SNAPSHOT_INTERVAL)
+                try:
+                    snapshot()
+                except (OSError, ValueError) as error:
+                    print(f"{run_id}: snapshot postponed ({error}). Raw replies remain saved.", flush=True)
+
+        reporter = asyncio.create_task(snapshots()) if follow and snapshot else None
+        try:
+            async with asyncio.TaskGroup() as group:
+                for endpoint in needed:
+                    if endpoint.alias in routes:
+                        group.create_task(run_endpoint(endpoint))
+        finally:
+            if reporter is not None:
+                reporter.cancel()
+                with suppress(asyncio.CancelledError):
+                    await reporter

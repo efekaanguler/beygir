@@ -35,41 +35,68 @@ def retry_delay(headers, default: float) -> float:
     return default
 
 
+def window_wait(events, now: float, period: int, request_limit: int,
+                token_limit: int, reservation: int) -> float:
+    count = len(events)
+    consumed = sum(event[1] for event in events)
+    if reservation > token_limit:
+        return float("inf")
+    if count < request_limit and consumed + reservation <= token_limit:
+        return 0.0
+    for started, tokens in events:
+        count -= 1
+        consumed -= tokens
+        if count < request_limit and consumed + reservation <= token_limit:
+            return max(0.0, started + period - now + 0.05)
+    return float("inf")
+
+
 class Quota:
     def __init__(self, limits: Limits, history: list[tuple[float, int]]):
         self.limits = limits
         self.events = deque([started, tokens] for started, tokens in history)
         self.blocked_until = 0.0
         self.server_daily_remaining = None
+        self.server_daily_ready = 0.0
+        self.server_reset_hint = 900.0
 
     def wait(self, tokens: int, now: float) -> float:
         while self.events and self.events[0][0] <= now - 86_400:
             self.events.popleft()
-        minute = [event for event in reversed(self.events) if event[0] > now - 60]
-        daily_exhausted = (len(self.events) >= self.limits.rpd
-                           or sum(event[1] for event in self.events) + tokens > self.limits.tpd
-                           or self.server_daily_remaining == 0)
-        if daily_exhausted:
-            return float("inf")
-        delay = max(0.0, self.blocked_until - now)
-        if len(minute) >= self.limits.rpm or sum(event[1] for event in minute) + tokens > self.limits.tpm:
-            return max(delay, minute[-1][0] + 60 - now + 0.01) if minute else float("inf")
-        return delay
+        minute = []
+        for event in reversed(self.events):
+            if event[0] <= now - 60:
+                break
+            minute.append(event)
+        if self.server_daily_remaining == 0 and now >= self.server_daily_ready:
+            self.server_daily_remaining = None
+        return max(
+            0.0, self.blocked_until - now,
+            self.server_daily_ready - now if self.server_daily_remaining == 0 else 0.0,
+            window_wait(list(reversed(minute)), now, 60, self.limits.rpm, self.limits.tpm, tokens),
+            window_wait(self.events, now, 86_400, self.limits.rpd, self.limits.tpd, tokens),
+        )
 
     def reserve(self, tokens: int, now: float) -> list:
         event = [now, tokens]
         self.events.append(event)
         if self.server_daily_remaining:
             self.server_daily_remaining -= 1
+            if self.server_daily_remaining == 0:
+                self.server_daily_ready = now + self.server_reset_hint + 0.1
         return event
 
     def observe(self, headers, status: int) -> None:
         now = time.time()
         remaining = headers.get("x-ratelimit-remaining-requests", "")
+        reset = seconds(headers.get("x-ratelimit-reset-requests", ""))
+        if reset > 0:
+            self.server_reset_hint = reset
         if remaining.isdigit():
             value = int(remaining)
-            self.server_daily_remaining = (value if self.server_daily_remaining is None
-                                           else min(value, self.server_daily_remaining))
+            self.server_daily_remaining = value
+            if value == 0:
+                self.server_daily_ready = now + retry_delay(headers, self.server_reset_hint) + 0.1
         if status == 429:
             token_reset = seconds(headers.get("x-ratelimit-reset-tokens", "")) or 10
             delay = retry_delay(headers, token_reset)

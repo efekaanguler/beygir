@@ -2,6 +2,7 @@ import csv
 import json
 import os
 import tempfile
+import time
 import unittest
 from collections import Counter
 from dataclasses import replace
@@ -59,9 +60,10 @@ class ScoreTests(unittest.TestCase):
         quota = Quota(Limits(rpm=2, rpd=3, tpm=1500, tpd=5000), [])
         quota.reserve(700, 100)
         quota.reserve(700, 101)
-        self.assertAlmostEqual(59.01, quota.wait(700, 101))
+        self.assertAlmostEqual(59.05, quota.wait(700, 101))
         quota.reserve(700, 200)
-        self.assertEqual(float("inf"), quota.wait(700, 201))
+        self.assertAlmostEqual(86_299.05, quota.wait(700, 201))
+        self.assertEqual(0, quota.wait(700, 86_501))
 
 
 class EndToEndTests(unittest.IsolatedAsyncioTestCase):
@@ -102,8 +104,24 @@ class EndToEndTests(unittest.IsolatedAsyncioTestCase):
                     catalog()["gpt20"], store,
                 )
                 pool.groups["same"].server_daily_remaining = 0
+                pool.groups["same"].server_daily_ready = time.time() + 600
                 route, _, _ = await pool.acquire()
                 self.assertEqual("three", route.label)
+
+    async def test_follow_mode_waits_past_one_shot_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with RunStore(Path(directory) / "run.sqlite3") as store:
+                endpoint = catalog()["qwen"]
+                routes = [Route("one", "g1", "test-one")]
+                one_shot = RoutePool(routes, endpoint, store)
+                following = RoutePool(routes, endpoint, store, follow=True)
+                with patch("beygir.runner.MAX_QUOTA_WAIT", 0.005):
+                    deadline = time.time() + 0.03
+                    one_shot.groups["g1"].blocked_until = deadline
+                    following.groups["g1"].blocked_until = deadline
+                    self.assertIsNone(await one_shot.acquire())
+                    route, _, _ = await following.acquire()
+                    self.assertEqual("one", route.label)
 
     async def test_cached_run_can_add_an_endpoint(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -164,6 +182,7 @@ class EndToEndTests(unittest.IsolatedAsyncioTestCase):
                     await execute(store, "mock", DEFAULT_ITEMS, "pilot", [endpoint], SEED, 3, None)
                     await execute(store, "mock", DEFAULT_ITEMS, "pilot", [endpoint], SEED, 3, None)
                     self.assertEqual(len(requests), 48)
+                    self.assertEqual(48, store.progress("mock")[0]["saved"])
             with RunStore(database) as store:
                 exports = write_report(store, database, "mock")
                 self.assertEqual(len(requests), 48)

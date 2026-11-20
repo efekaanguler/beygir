@@ -28,7 +28,8 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="start or resume a benchmark run")
     report = commands.add_parser("report", help="rebuild CSV and JSONL exports without API calls")
-    for command in (run, report):
+    status = commands.add_parser("status", help="show live progress from the local database")
+    for command in (run, report, status):
         command.add_argument("run_id")
         command.add_argument("--db", type=Path, default=DEFAULT_DB)
     run.add_argument("--dataset", type=Path, default=DEFAULT_ITEMS)
@@ -37,6 +38,8 @@ def main() -> None:
     run.add_argument("--models", nargs="+", choices=sorted(models), default=list(DEFAULT_MODELS))
     run.add_argument("--seed", type=int, default=SEED)
     run.add_argument("--workers", type=positive_int, default=3, help="concurrent requests per model")
+    run.add_argument("--keep-waiting", action="store_true",
+                     help="wait through quota windows and write reports every 15 minutes")
     run.add_argument("--max-new-per-model", type=positive_int, help="limit pending jobs scheduled per model")
     args = parser.parse_args()
 
@@ -46,6 +49,15 @@ def main() -> None:
             with RunStore(args.db) as store:
                 write_report(store, args.db, args.run_id)
             return
+        if args.command == "status":
+            with RunStore(args.db) as store:
+                rows = store.progress(args.run_id)
+            print(f"{args.run_id}: {sum(row['saved'] for row in rows)}/{sum(row['planned'] for row in rows)} saved")
+            for row in rows:
+                average = "—" if row["avg_tokens"] is None else f"{row['avg_tokens']:.0f} tokens/reply"
+                print(f"{row['model']:<26} {row['saved']:>4}/{row['planned']:<4}  "
+                      f"{row['last_hour']:>3} last hour  {row['attempts'] - row['saved']:>3} retries/errors  {average}")
+            return
         if len(set(args.models)) != len(args.models):
             parser.error("--models must be unique")
         endpoints = [models[name] for name in args.models]
@@ -54,7 +66,9 @@ def main() -> None:
             try:
                 asyncio.run(execute(store, args.run_id, args.dataset, args.split,
                                     endpoints, args.seed,
-                                    args.workers, args.max_new_per_model))
+                                    args.workers, args.max_new_per_model,
+                                    follow=args.keep_waiting,
+                                    snapshot=lambda: write_report(store, args.db, args.run_id)))
             except KeyboardInterrupt:
                 print("\nInterrupted. Completed responses are saved and can be resumed.")
             write_report(store, args.db, args.run_id)
