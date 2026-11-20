@@ -3,6 +3,7 @@
 import re
 import time
 from collections import deque
+from email.utils import parsedate_to_datetime
 
 from .endpoints import Limits
 
@@ -14,6 +15,24 @@ def seconds(raw: str) -> float:
         units = {"h": 3600, "m": 60, "s": 1, "ms": 0.001}
         return sum(float(value) * units[unit]
                    for value, unit in re.findall(r"(\d+(?:\.\d+)?)(ms|h|m|s)", raw))
+
+
+def retry_delay(headers, default: float) -> float:
+    """Read Retry-After as a duration or an HTTP date."""
+    value = headers.get("retry-after", "")
+    if value:
+        try:
+            return max(0.0, float(value))
+        except ValueError:
+            pass
+        delay = seconds(value)
+        if delay:
+            return delay
+        try:
+            return max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
+        except (ValueError, TypeError, OverflowError):
+            pass
+    return default
 
 
 class Quota:
@@ -52,5 +71,6 @@ class Quota:
             self.server_daily_remaining = (value if self.server_daily_remaining is None
                                            else min(value, self.server_daily_remaining))
         if status == 429:
-            delay = seconds(headers.get("retry-after", "")) or 10
+            token_reset = seconds(headers.get("x-ratelimit-reset-tokens", "")) or 10
+            delay = retry_delay(headers, token_reset)
             self.blocked_until = max(self.blocked_until, now + delay + 0.1)

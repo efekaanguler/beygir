@@ -64,7 +64,8 @@ class Route:
 
 
 def catalog() -> dict[str, Endpoint]:
-    provider = os.getenv("OPENROUTER_PROVIDER", "").strip()
+    llama_provider = os.getenv("OPENROUTER_PROVIDER", "").strip()
+    minimax_provider = os.getenv("OPENROUTER_MINIMAX_PROVIDER", "").strip()
     return {
         "gpt20": Endpoint("gpt20", "openai/gpt-oss-20b"),
         "gpt120": Endpoint("gpt120", "openai/gpt-oss-120b"),
@@ -72,8 +73,11 @@ def catalog() -> dict[str, Endpoint]:
         "allam": Endpoint("allam", "allam-2-7b", reasoning="",
                           limits=Limits(rpd=7000, tpm=6000, tpd=500_000), max_tokens=512, structured_output=False, token_estimate=900),
         "llama": Endpoint("llama", "meta-llama/llama-3.3-70b-instruct", OPENROUTER_URL,
-                          provider=provider, reasoning="",
+                          provider=llama_provider, reasoning="",
                           limits=Limits(rpd=10000, tpm=8000, tpd=4_000_000), max_tokens=512, structured_output=False, token_estimate=900),
+        "minimax": Endpoint("minimax", "minimax/minimax-m2.7", OPENROUTER_URL,
+                            provider=minimax_provider, reasoning="", structured_output=False,
+                            limits=Limits(rpd=10000, tpm=8000, tpd=4_000_000)),
     }
 
 
@@ -81,7 +85,9 @@ def configured_routes(endpoint: Endpoint) -> list[Route]:
     if endpoint.base_url == OPENROUTER_URL:
         key = os.getenv("OPENROUTER_API_KEY", "").strip()
         if not key or not endpoint.provider:
-            raise ValueError("Llama needs OPENROUTER_API_KEY and OPENROUTER_PROVIDER in .env")
+            provider_variable = ("OPENROUTER_PROVIDER" if endpoint.alias == "llama"
+                                 else "OPENROUTER_MINIMAX_PROVIDER")
+            raise ValueError(f"{endpoint.alias} needs OPENROUTER_API_KEY and {provider_variable} in .env")
         return [Route("openrouter", f"openrouter:{endpoint.provider}", key)]
     numbers = sorted(int(match[1]) for name in os.environ
                      if (match := re.fullmatch(r"GROQ_API_KEY_(\d+)", name)))

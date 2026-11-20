@@ -11,15 +11,33 @@ from unittest.mock import patch
 import httpx
 
 from beygir.dataset import DEFAULT_ITEMS, SEED
-from beygir.endpoints import Limits, Route, catalog
+from beygir.endpoints import Limits, Route, catalog, configured_routes
 from beygir.quota import Quota
 from beygir.report import write_report
-from beygir.runner import RoutePool, execute
+from beygir.runner import RoutePool, api_attempt, execute
 from beygir.scoring import name_effects, scored_item, summarize
+from beygir.rules import Rule
 from beygir.storage import RunStore
 
 
 class ScoreTests(unittest.TestCase):
+    def test_openrouter_pins_supported_model_provider(self):
+        environment = {
+            "OPENROUTER_API_KEY": "mock-openrouter",
+            "OPENROUTER_PROVIDER": "deepinfra/turbo",
+            "OPENROUTER_MINIMAX_PROVIDER": "gmicloud/fp8",
+        }
+        with patch.dict(os.environ, environment):
+            for alias, model_id, provider in (
+                ("llama", "meta-llama/llama-3.3-70b-instruct", "deepinfra/turbo"),
+                ("minimax", "minimax/minimax-m2.7", "gmicloud/fp8"),
+            ):
+                endpoint = catalog()[alias]
+                request = endpoint.payload("Test", {})
+                self.assertEqual(model_id, request["model"])
+                self.assertEqual({"only": [provider], "allow_fallbacks": False}, request["provider"])
+                self.assertEqual("openrouter", configured_routes(endpoint)[0].label)
+
     def test_false_positive_and_malformed_have_distinct_effects(self):
         good = {"id": "m1", "task": "mate", "group": "x", "gold": {"standard": ["g6g7"]}}
         bad = {"id": "m2", "task": "mate", "group": "x", "gold": {"standard": []}}
@@ -64,6 +82,35 @@ class ScoreTests(unittest.TestCase):
 
 
 class EndToEndTests(unittest.IsolatedAsyncioTestCase):
+    async def test_transient_error_is_logged_and_next_attempt_uses_healthy_route(self):
+        keys_seen = []
+
+        def server(request):
+            token = request.headers["Authorization"]
+            keys_seen.append(token)
+            if token == "Bearer test-one":
+                return httpx.Response(503, headers={"Retry-After": "20"}, json={"error": "busy"})
+            return httpx.Response(200, json={"choices": [], "usage": {"total_tokens": 25}})
+
+        with tempfile.TemporaryDirectory() as directory:
+            with RunStore(Path(directory) / "run.sqlite3") as store:
+                item = {"id": "sample"}
+                store.start("retry", {}, [item])
+                endpoint = catalog()["qwen"]
+                pool = RoutePool([Route("one", "g1", "test-one"), Route("two", "g2", "test-two")],
+                                 endpoint, store)
+                async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as client:
+                    for name, expected in (("Chess", "transport_error"), ("Chess", "response"),
+                                           ("Okuz", "response")):
+                        status = await api_attempt(client, store, endpoint, pool, "retry",
+                                                   item, name, Rule.STANDARD, {})
+                        self.assertEqual(expected, status)
+                self.assertEqual(["Bearer test-one", "Bearer test-two", "Bearer test-two"], keys_seen)
+                attempts = list(store.attempts("retry"))
+                self.assertEqual(["transport_error", "response", "response"],
+                                 [row["status"] for row in attempts])
+                self.assertEqual([503, 200, 200], [row["http_status"] for row in attempts])
+
     async def test_blocked_quota_group_uses_only_independent_route(self):
         with tempfile.TemporaryDirectory() as directory:
             with RunStore(Path(directory) / "run.sqlite3") as store:

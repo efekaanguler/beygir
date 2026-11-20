@@ -9,7 +9,7 @@ cp -n .env.example .env
 .venv/bin/python -m unittest discover -s tests
 ~~~
 
-Use the local .env for credentials. The numbered Groq keys rotate across requests. Keys from the same organization share the same quota group and do not multiply capacity. Set different group labels only when the keys belong to independently metered organizations. Groq's free limits are tracked per model and quota group. A run pauses if it cannot proceed within its local or server limits.
+Use the local .env for credentials. The numbered Groq keys rotate across requests. Keys from the same organization share the same quota group and do not multiply capacity. Set different group labels only when the keys belong to independently metered organizations. Groq's free limits are tracked per model and quota group. The runner skips a quota group until its short Retry-After interval elapses. After a timeout or temporary server error, the affected route cools down with increasing delays and other healthy routes can continue. Each failed request is logged with the route and status. If every route is unavailable beyond the short retry window, the run pauses and can be resumed with the same run ID.
 
 ## Start and resume
 
@@ -26,7 +26,7 @@ Use the local .env for credentials. The numbered Groq keys rotate across request
 
 The main run spans multiple free-tier quota windows. For a small live check, use a separate run ID with --max-new-per-model 3. Short checks draw from the pilot sample and are not study results. The two GPT-OSS endpoints use low reasoning effort and Qwen uses reasoning disabled. The three Groq endpoints use strict output schemas, with the same schema across all conditions for a given item. The schemas constrain the response shape and do not provide candidate moves or labels. A model response that is invalid or truncated is retained and scored for format and task performance.
 
-To add Llama 3.3 70B Instruct, set OPENROUTER_API_KEY and OPENROUTER_PROVIDER to the chosen provider slug. Use the same run ID with --models gpt20 gpt120 qwen llama. The existing three models' saved replies are reused and the Llama jobs are added to the run. The Llama adapter asks for the same JSON in the prompt and pins the routing provider. The available Groq keys do not list a Llama endpoint. Groq's allam-2-7b can also be selected explicitly with --models allam.
+To add Llama 3.3 70B Instruct, set OPENROUTER_API_KEY and set OPENROUTER_PROVIDER to a fixed slug such as deepinfra/turbo. Use the same run ID with --models gpt20 gpt120 qwen llama. The existing three models' saved replies are reused and the Llama jobs are added to the run. To add MiniMax M2.7 through the same key, set OPENROUTER_MINIMAX_PROVIDER to a fixed slug such as gmicloud/fp8 and append minimax to the model list. Keep all already-selected aliases in that list when extending a run. Both OpenRouter adapters request the same JSON in the prompt and pin their provider. Validate an OpenRouter endpoint with one or two pilot jobs before adding it to a main run. The Groq keys currently in use reject general-purpose Llama and MiniMax. Groq's allam-2-7b can also be selected explicitly with --models allam.
 
 ## Rebuild the dataset
 

@@ -13,7 +13,7 @@ import httpx
 
 from .endpoints import Endpoint, Route, available_models, configured_routes
 from .prompts import NAMES, fingerprint, load_templates, render, response_format
-from .quota import Quota
+from .quota import Quota, retry_delay
 from .rules import Rule
 from .storage import RunStore
 
@@ -33,16 +33,31 @@ class RoutePool:
     def __init__(self, routes: list[Route], endpoint: Endpoint, store: RunStore):
         self.routes = deque(routes)
         self.disabled = set()
+        self.retry_at = {}
+        self.transient_failures = {}
         self.token_estimate = endpoint.token_estimate
         self.groups = {
             group: Quota(endpoint.limits, store.recent_usage(endpoint.model_id, group, time.time() - 86_400))
             for group in {route.quota_group for route in routes}
         }
 
+    def mark_transient_failure(self, route: Route, headers) -> float:
+        label = route.label
+        failures = self.transient_failures.get(label, 0) + 1
+        self.transient_failures[label] = failures
+        delay = retry_delay(headers, min(30, 2 ** min(failures, 5)))
+        self.retry_at[label] = max(self.retry_at.get(label, 0.0), time.monotonic() + delay)
+        return delay
+
+    def mark_success(self, route: Route) -> None:
+        if self.retry_at.get(route.label, 0.0) <= time.monotonic():
+            self.transient_failures.pop(route.label, None)
+
     async def acquire(self):
         deadline = time.monotonic() + MAX_QUOTA_WAIT
         while True:
             now = time.time()
+            monotonic_now = time.monotonic()
             delays = []
             for _ in range(len(self.routes)):
                 route = self.routes[0]
@@ -50,7 +65,8 @@ class RoutePool:
                 if route.label in self.disabled:
                     continue
                 quota = self.groups[route.quota_group]
-                delay = quota.wait(self.token_estimate, now)
+                route_wait = self.retry_at.get(route.label, 0.0) - monotonic_now
+                delay = max(route_wait, quota.wait(self.token_estimate, now))
                 if delay <= 0:
                     return route, quota, quota.reserve(self.token_estimate, now)
                 delays.append(delay)
@@ -89,10 +105,12 @@ async def api_attempt(client, store, endpoint, pool, run_id, item, name, rule, p
     http_status = None
     charged = event[1]
     body = None
+    response_headers = {}
     try:
         response = await client.post(f"{endpoint.base_url}/chat/completions",
                                      headers=route.headers(), json=payload)
         http_status = response.status_code
+        response_headers = response.headers
         try:
             body = response.json()
         except ValueError:
@@ -118,6 +136,12 @@ async def api_attempt(client, store, endpoint, pool, run_id, item, name, rule, p
     except httpx.RequestError as error:
         body = {"error": type(error).__name__}
     finally:
+        if status == "transport_error":
+            delay = pool.mark_transient_failure(route, response_headers)
+            print(f"{endpoint.alias}: {route.label} cooling down for {delay:g}s after a temporary error.",
+                  flush=True)
+        elif status == "response":
+            pool.mark_success(route)
         event[1] = charged
         store.record({
             "run_id": run_id, "item_id": item["id"], "name": name, "rule": rule.value,
@@ -191,7 +215,7 @@ async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpo
                 while jobs and not paused:
                     item, name, rule = jobs.popleft()
                     payload = endpoint.payload(render(item, name, rule, templates), response_format(item))
-                    for attempt in range(RETRIES):
+                    for _ in range(RETRIES):
                         status = await api_attempt(client, store, endpoint, pool, run_id,
                                                    item, name, rule, payload)
                         if status == "response":
@@ -203,8 +227,6 @@ async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpo
                             paused = True
                             print(f"{endpoint.alias}: paused ({status}); pending items can be resumed.", flush=True)
                             break
-                        if status == "transport_error" and attempt + 1 < RETRIES:
-                            await asyncio.sleep(2 ** attempt)
 
             async with asyncio.TaskGroup() as group:
                 for _ in range(min(workers, planned)):
