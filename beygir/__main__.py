@@ -4,10 +4,13 @@ import argparse
 import asyncio
 from pathlib import Path
 
+from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
+from .batch import batch_directory, collect_batches, prepare_batches, submit_batches
+from .clients import client_for
 from .dataset import DEFAULT_ITEMS, SEED
-from .endpoints import DEFAULT_MODELS, catalog, configured_routes
+from .endpoints import DEFAULT_MODELS, catalog
 from .report import write_report
 from .runner import execute
 from .storage import RunStore, exclusive_runner, output_directory
@@ -29,14 +32,20 @@ def main() -> None:
     run = commands.add_parser("run", help="start or resume a benchmark run")
     report = commands.add_parser("report", help="rebuild CSV and JSONL exports without API calls")
     status = commands.add_parser("status", help="show live progress from the local database")
-    for command in (run, report, status):
+    prepare = commands.add_parser("batch-prepare", help="write offline Bedrock JSONL and a record manifest")
+    submit = commands.add_parser("batch-submit", help="upload and submit a prepared Bedrock batch")
+    collect = commands.add_parser("batch-collect", help="import completed Bedrock batch outputs")
+    for command in (run, report, status, prepare, submit, collect):
         command.add_argument("run_id")
         command.add_argument("--db", type=Path, default=DEFAULT_DB)
-    run.add_argument("--dataset", type=Path, default=DEFAULT_ITEMS)
-    run.add_argument("--split", choices=("pilot", "main"), default="pilot")
     models = catalog()
-    run.add_argument("--models", nargs="+", choices=sorted(models), default=list(DEFAULT_MODELS))
-    run.add_argument("--seed", type=int, default=SEED)
+    for command in (run, prepare):
+        command.add_argument("--dataset", type=Path, default=DEFAULT_ITEMS)
+        command.add_argument("--split", choices=("pilot", "main"), default="pilot" if command is run else "main")
+        command.add_argument("--models", nargs="+", choices=sorted(models), default=list(DEFAULT_MODELS) if command is run else None,
+                             required=command is prepare)
+        command.add_argument("--seed", type=int, default=SEED)
+        command.add_argument("--per-group", type=positive_int, help="pick this many items per task and sample group")
     run.add_argument("--workers", type=positive_int, default=3, help="concurrent requests per model")
     run.add_argument("--keep-waiting", action="store_true",
                      help="wait through quota windows and write reports every 15 minutes")
@@ -58,21 +67,36 @@ def main() -> None:
                 print(f"{row['model']:<26} {row['saved']:>4}/{row['planned']:<4}  "
                       f"{row['last_hour']:>3} last hour  {row['attempts'] - row['saved']:>3} retries/errors  {average}")
             return
+        if args.command in ("batch-submit", "batch-collect"):
+            directory = batch_directory(args.db, args.run_id)
+            with exclusive_runner(args.db), RunStore(args.db) as store:
+                if args.command == "batch-submit":
+                    submit_batches(directory, args.run_id)
+                else:
+                    collect_batches(store, directory, args.run_id)
+                    write_report(store, args.db, args.run_id)
+            return
         if len(set(args.models)) != len(args.models):
             parser.error("--models must be unique")
         endpoints = [models[name] for name in args.models]
-        configured_routes()
+        if args.command == "batch-prepare":
+            with exclusive_runner(args.db), RunStore(args.db) as store:
+                prepare_batches(store, batch_directory(args.db, args.run_id), args.run_id, args.dataset, args.split,
+                                endpoints, args.seed, args.per_group)
+            return
+        for endpoint in endpoints:
+            client_for(endpoint).routes(endpoint)
         with exclusive_runner(args.db), RunStore(args.db) as store:
             try:
                 asyncio.run(execute(store, args.run_id, args.dataset, args.split,
                                     endpoints, args.seed,
                                     args.workers, args.max_new_per_model,
-                                    follow=args.keep_waiting,
+                                    follow=args.keep_waiting, per_group=args.per_group,
                                     snapshot=lambda: write_report(store, args.db, args.run_id)))
             except KeyboardInterrupt:
                 print("\nInterrupted. Completed responses are saved and can be resumed.")
             write_report(store, args.db, args.run_id)
-    except ValueError as error:
+    except (ValueError, BotoCoreError, ClientError) as error:
         parser.exit(2, f"beygir: {error}\n")
 
 

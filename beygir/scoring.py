@@ -23,6 +23,13 @@ def parse_object(body) -> dict:
     content = message(body)
     if not isinstance(content, str):
         return {}
+    content = content.strip()
+    if content.startswith(('~~~json\n', '~~~\n')) and content.endswith('\n~~~'):
+        content = content.split('\n', 1)[1].rsplit('\n', 1)[0]
+    fence = chr(96) * 3
+    if (content.startswith((fence + 'json\n', fence + '\n'))
+            and content.endswith('\n' + fence)):
+        content = content.split('\n', 1)[1].rsplit('\n', 1)[0]
     try:
         parsed = json.loads(content)
     except ValueError:

@@ -4,8 +4,6 @@ import os
 import re
 from dataclasses import dataclass, field
 
-import httpx
-
 GROQ_URL = "https://api.groq.com/openai/v1"
 DEFAULT_MODELS = ("gpt20", "gpt120", "qwen")
 
@@ -28,24 +26,13 @@ class Endpoint:
     max_tokens: int = 4096
     structured_output: bool = True
     token_estimate: int = 2600
+    region: str = ""
 
     def signature(self) -> dict:
         return {"alias": self.alias, "model_id": self.model_id, "api": self.base_url,
-                "provider": "", "reasoning": self.reasoning,
+                "provider": "bedrock" if self.region else "", "reasoning": self.reasoning,
                 "temperature": 0, "max_completion_tokens": self.max_tokens,
                 "structured_output": self.structured_output}
-
-    def payload(self, prompt: str, schema: dict) -> dict:
-        request = {"model": self.model_id, "temperature": 0,
-                   "messages": [{"role": "user", "content": prompt}]}
-        request["max_completion_tokens"] = self.max_tokens
-        if self.reasoning:
-            request["reasoning_effort"] = self.reasoning
-            request["include_reasoning"] = False
-        if self.structured_output:
-            request["response_format"] = schema
-        return request
-
 
 @dataclass(frozen=True)
 class Route:
@@ -58,13 +45,35 @@ class Route:
 
 
 def catalog() -> dict[str, Endpoint]:
-    return {
+    region = os.getenv("BEDROCK_REGION", "eu-central-1").strip() or "eu-central-1"
+    if not re.fullmatch(r"(?:eu|us|ap|ca|sa|me|af|il|mx)-[a-z]+-\d+", region):
+        raise ValueError("BEDROCK_REGION must be an AWS region code")
+    models = {
         "gpt20": Endpoint("gpt20", "openai/gpt-oss-20b"),
         "gpt120": Endpoint("gpt120", "openai/gpt-oss-120b"),
         "qwen": Endpoint("qwen", "qwen/qwen3.8-27b", reasoning="none", max_tokens=512, token_estimate=750),
         "allam": Endpoint("allam", "allam-2-7b", reasoning="",
                           limits=Limits(rpd=7000, tpm=6000, tpd=500_000), max_tokens=512, structured_output=False, token_estimate=900),
     }
+    bedrock_models = (
+        ("aws-oss20", "openai.gpt-oss-20b-1:0", 4096, "low"),
+        ("aws-oss120", "openai.gpt-oss-120b-1:0", 4096, "low"),
+        ("aws-qwen32", "qwen.qwen3-32b-v1:0", 4096, ""),
+        ("aws-glmflash", "zai.glm-4.7-flash", 4096, ""),
+        ("aws-glm47", "zai.glm-4.7", 4096, ""),
+        ("aws-deepseek", "deepseek.v3.2", 4096, ""),
+        ("aws-kimi", "moonshotai.kimi-k2.5", 4096, ""),
+        ("aws-nova", "eu.amazon.nova-2-lite-v1:0", 2048, ""),
+        ("aws-haiku", "eu.anthropic.claude-haiku-4-5-20251001-v1:0", 2048, ""),
+        ("aws-minimax", "minimax.minimax-m2.1", 4096, ""),
+    )
+    for alias, model, cap, reasoning in bedrock_models:
+        models[alias] = Endpoint(
+            alias, model, f"https://bedrock-runtime.{region}.amazonaws.com",
+            reasoning=reasoning, limits=Limits(rpm=30, rpd=100_000, tpm=100_000, tpd=100_000_000),
+            max_tokens=cap, structured_output=False, region=region,
+        )
+    return models
 
 
 def configured_routes() -> list[Route]:
@@ -86,9 +95,3 @@ def configured_routes() -> list[Route]:
         raise ValueError("Set GROQ_API_KEY_1 in .env")
     return routes
 
-
-async def available_models(client: httpx.AsyncClient, endpoint: Endpoint, route: Route) -> set[str]:
-    response = await client.get(f"{endpoint.base_url}/models", headers=route.headers())
-    if not response.is_success:
-        raise ValueError(f"{route.label} model catalog returned HTTP {response.status_code}")
-    return {item["id"] for item in response.json()["data"]}

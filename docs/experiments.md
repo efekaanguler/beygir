@@ -48,3 +48,35 @@ The build uses the checked-in puzzle slice by default. Fetching a fresh upstream
 The reports read the local SQLite database. No API calls are made during report generation. Each run directory under runs/ contains the protocol fingerprint, raw attempts in JSONL, item scores, condition metrics, all 15 condition pairings per model, the matched difference in the Chess–Okuz gap between each variant and standard chess, and figure files when the relevant matched responses are available. Back up the database and its runs/ directory locally if the machine or checkout will change.
 
 Item accuracy counts malformed answers as incorrect when the given field cannot be scored. Precision, recall and F1 use interpretable binary classifications and are accompanied by their coverage and class counts. Balanced accuracy counts failed classifications against the true class. Matching uses the same items and includes only pairs where both API responses were received. A conditional mate-move comparison across rules includes only rows where both rules have a verified mate. The matched mate figure uses the stricter subset where all three rules have a verified mate. Missing API replies are reported separately from model errors.
+
+## AWS Bedrock
+
+The default AWS region is Frankfurt. Set BEDROCK_REGION=eu-central-1 and place a matching regional bearer in AWS_BEARER_TOKEN_BEDROCK. The CLI rejects a recognized short-term key from a different region. Groq aliases and aws-* aliases use separate provider adapters. Choose a different run ID when changing regions or the sampling design.
+
+A balanced 80-position run selects 10 items per group for each task, retaining the full 2-by-3 condition matrix. The five suggested Frankfurt endpoints are GPT-OSS 20B, GPT-OSS 120B, Qwen3 32B, GLM 4.7 Flash and Nova 2 Lite. Nova uses the EU inference profile.
+
+### On demand
+
+~~~sh
+.venv/bin/python -m beygir run aws-live-pilot --split pilot \
+  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova --max-new-per-model 2
+
+.venv/bin/python -m beygir run aws-live-delivery --split main --per-group 10 \
+  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova --workers 4
+~~~
+
+Bedrock sends native Converse requests and retains the raw Bedrock answer alongside the normalized scoring fields. The same scoring rules accept a single JSON object, optionally enclosed in one Markdown code fence. Model-visible explanations outside that object still count as format failures.
+
+### Batch
+
+Use a unique run ID for a batch. Offline preparation creates one JSONL input per model and saves its record IDs under runs/. Batch submission and collection require standard AWS SDK credentials with S3 access and Bedrock job permissions. Configure AWS_PROFILE if needed, and set BEDROCK_BATCH_BUCKET to an existing regional bucket and BEDROCK_BATCH_ROLE_ARN to a Bedrock batch service role. The submitting identity needs permission to pass that role. Limit the role's S3 permissions to the relevant input and output paths.
+
+~~~sh
+.venv/bin/python -m beygir batch-prepare aws-delivery --per-group 10 \
+  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova
+.venv/bin/python -m beygir batch-submit aws-delivery
+.venv/bin/python -m beygir batch-collect aws-delivery
+.venv/bin/python -m beygir status aws-delivery
+~~~
+
+Collection can be repeated as jobs finish. Successful replies and per-record errors are imported by record ID, independent of output order. Do not run the same unfinished batch cells through on-demand while the batch is active. AWS batch completion is capacity-dependent.

@@ -13,7 +13,8 @@ from pathlib import Path
 
 import httpx
 
-from .endpoints import Endpoint, Route, available_models, configured_routes
+from .clients import client_for
+from .endpoints import Endpoint, Route
 from .prompts import NAMES, fingerprint, load_templates, render, response_format
 from .quota import Quota, retry_delay
 from .rules import Rule
@@ -121,12 +122,12 @@ async def api_attempt(client, store, endpoint, pool, run_id, item, name, rule, p
     body = None
     response_headers = {}
     try:
-        response = await client.post(f"{endpoint.base_url}/chat/completions",
-                                     headers=route.headers(), json=payload)
+        adapter = client_for(endpoint)
+        response = await adapter.complete(client, endpoint, route, payload)
         http_status = response.status_code
         response_headers = response.headers
         try:
-            body = response.json()
+            body = adapter.normalize(response.json())
         except ValueError:
             body = response.text
         quota.observe(response.headers, http_status)
@@ -170,14 +171,14 @@ async def api_attempt(client, store, endpoint, pool, run_id, item, name, rule, p
 async def pick_routes(client: httpx.AsyncClient, endpoints: list[Endpoint]):
     cached = {}
     result = {}
-    groq_routes = configured_routes()
     for endpoint in endpoints:
         active = []
-        for route in groq_routes:
-            key = endpoint.base_url, route.label
+        adapter = client_for(endpoint)
+        for route in adapter.routes(endpoint):
+            key = (endpoint.base_url, route.label, endpoint.model_id if endpoint.region else "")
             if key not in cached:
                 try:
-                    cached[key] = await available_models(client, endpoint, route)
+                    cached[key] = await adapter.models(client, endpoint, route)
                 except (ValueError, httpx.HTTPError):
                     cached[key] = set()
                     print(f"Model catalog unavailable for {route.label}.")
@@ -190,11 +191,20 @@ async def pick_routes(client: httpx.AsyncClient, endpoints: list[Endpoint]):
     return result
 
 
-async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpoints: list[Endpoint],
-                  seed: int, workers: int, max_new: int | None, *,
-                  follow: bool = False, snapshot: Callable[[], object] | None = None) -> None:
+def prepare_run(store: RunStore, run_id: str, dataset: Path, split: str, endpoints: list[Endpoint],
+                seed: int, per_group: int | None = None):
     items = load_items(dataset, split)
     templates = load_templates()
+    if per_group is not None:
+        groups = {}
+        for item in items:
+            groups.setdefault((item["task"], item["group"]), []).append(item)
+        rng = random.Random(seed)
+        items = []
+        for key, group in sorted(groups.items()):
+            if len(group) < per_group:
+                raise ValueError(f"Only {len(group)} items available for {key}")
+            items.extend(rng.sample(sorted(group, key=lambda row: row["id"]), per_group))
     spec = {
         "format": 2, "split": split, "seed": seed,
         "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(),
@@ -202,7 +212,17 @@ async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpo
         "endpoints": [endpoint.signature() for endpoint in endpoints],
         "names": list(NAMES), "rules": [rule.value for rule in Rule],
     }
+    if per_group is not None:
+        spec["per_group"] = per_group
     store.start(run_id, spec, items)
+    return items, templates
+
+
+async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpoints: list[Endpoint],
+                  seed: int, workers: int, max_new: int | None, *,
+                  follow: bool = False, snapshot: Callable[[], object] | None = None,
+                  per_group: int | None = None) -> None:
+    items, templates = prepare_run(store, run_id, dataset, split, endpoints, seed, per_group)
     completed = store.completed(run_id)
     all_jobs = list(itertools.product(items, NAMES, Rule))
     random.Random(seed).shuffle(all_jobs)
@@ -231,7 +251,7 @@ async def execute(store: RunStore, run_id: str, dataset: Path, split: str, endpo
                 while jobs and not paused:
                     job = jobs.popleft()
                     item, name, rule = job
-                    payload = endpoint.payload(render(item, name, rule, templates), response_format(item))
+                    payload = client_for(endpoint).payload(endpoint, render(item, name, rule, templates), response_format(item))
                     for _ in range(RETRIES):
                         status = await api_attempt(client, store, endpoint, pool, run_id,
                                                    item, name, rule, payload)
