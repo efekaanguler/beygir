@@ -57,12 +57,12 @@ The expanded benchmark selects 20 items per sampling group per task for 160 uniq
 
 ### Sequential on demand
 
-The delivery run is planned for 120 balanced items with 15 items per sampling group and task. Its eight models share all six conditions and receive 720 requests each. This makes 5,760 planned responses. DeepSeek uses its native JSON schema and sends thinking disabled. Availability of Claude, Grok and GPT-6.2 Sol depends on the AWS account, so validate both tasks for each model before including it.
+The delivery run is planned for 120 balanced items with 15 items per sampling group and task. Its eight models share all six conditions and receive 720 requests each. This makes 5,760 planned responses. DeepSeek uses its native JSON schema with thinking disabled. The sequential roster uses Nova Lite v1, which produced valid answers for both pilot tasks. GPT-OSS 20B can return a truncated or malformed answer, which is retained as a model outcome. Availability of Claude, Grok and GPT-6.2 Sol depends on the AWS account, so validate both tasks for each model before including it.
 
 ~~~sh
-.venv/bin/python -m beygir run stockholm-serial-delivery --split main \
+.venv/bin/python -m beygir run stockholm-serial-main --split main \
   --per-group 15 --serial --keep-waiting \
-  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova aws-devstral aws-glm47 aws-deepseek
+  --models aws-oss20 aws-oss120 aws-qwen32 aws-glmflash aws-nova-lite aws-devstral aws-glm47 aws-deepseek
 ~~~
 
 Serial mode permits at most one in-flight request across all endpoints. Models can take turns while another endpoint cools down. Reuse the same run ID and arguments to resume. Bedrock sends native Converse requests and keeps the raw provider reply alongside normalized scoring fields. Scoring accepts a single JSON object with an optional Markdown code fence.
