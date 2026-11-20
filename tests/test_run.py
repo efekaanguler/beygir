@@ -11,7 +11,7 @@ from unittest.mock import patch
 import httpx
 
 from beygir.dataset import DEFAULT_ITEMS, SEED
-from beygir.endpoints import Limits, Route, catalog, configured_routes
+from beygir.endpoints import Limits, Route, catalog
 from beygir.quota import Quota
 from beygir.report import write_report
 from beygir.runner import RoutePool, api_attempt, execute
@@ -21,25 +21,6 @@ from beygir.storage import RunStore
 
 
 class ScoreTests(unittest.TestCase):
-    def test_openrouter_pins_supported_model_provider(self):
-        environment = {
-            "OPENROUTER_API_KEY": "mock-openrouter",
-            "OPENROUTER_PROVIDER": "deepinfra/turbo",
-            "OPENROUTER_MINIMAX_PROVIDER": "gmicloud/fp8",
-        }
-        with patch.dict(os.environ, environment):
-            for alias, model_id, provider in (
-                ("llama", "meta-llama/llama-3.3-70b-instruct", "deepinfra/turbo"),
-                ("minimax", "minimax/minimax-m2.7", "gmicloud/fp8"),
-            ):
-                endpoint = catalog()[alias]
-                request = endpoint.payload("Test", {})
-                self.assertEqual(model_id, request["model"])
-                self.assertEqual({"only": [provider], "allow_fallbacks": False,
-                                  "require_parameters": True}, request["provider"])
-                self.assertEqual({"type": "json_object"}, request["response_format"])
-                self.assertEqual("openrouter", configured_routes(endpoint)[0].label)
-
     def test_false_positive_and_malformed_have_distinct_effects(self):
         good = {"id": "m1", "task": "mate", "group": "x", "gold": {"standard": ["g6g7"]}}
         bad = {"id": "m2", "task": "mate", "group": "x", "gold": {"standard": []}}

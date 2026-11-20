@@ -49,8 +49,7 @@ def main() -> None:
         if len(set(args.models)) != len(args.models):
             parser.error("--models must be unique")
         endpoints = [models[name] for name in args.models]
-        for endpoint in endpoints:
-            configured_routes(endpoint)
+        configured_routes()
         with exclusive_runner(args.db), RunStore(args.db) as store:
             try:
                 asyncio.run(execute(store, args.run_id, args.dataset, args.split,

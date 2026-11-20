@@ -156,9 +156,10 @@ async def api_attempt(client, store, endpoint, pool, run_id, item, name, rule, p
 async def pick_routes(client: httpx.AsyncClient, endpoints: list[Endpoint]):
     cached = {}
     result = {}
+    groq_routes = configured_routes()
     for endpoint in endpoints:
         active = []
-        for route in configured_routes(endpoint):
+        for route in groq_routes:
             key = endpoint.base_url, route.label
             if key not in cached:
                 try:

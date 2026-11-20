@@ -26,18 +26,7 @@ Use the local .env for credentials. The numbered Groq keys rotate across request
 
 The main run spans multiple free-tier quota windows. For a small live check, use a separate run ID with --max-new-per-model 3. Short checks draw from the pilot sample and are not study results. The two GPT-OSS endpoints use low reasoning effort and Qwen uses reasoning disabled. The three Groq endpoints use strict output schemas, with the same schema across all conditions for a given item. The schemas constrain the response shape and do not provide candidate moves or labels. A model response that is invalid or truncated is retained and scored for format and task performance.
 
-## OpenRouter models
-
-The verified four-model lineup adds Llama 3.3 70B Instruct to the three Groq models. Set OPENROUTER_API_KEY and use the pinned DeepInfra endpoint via OPENROUTER_PROVIDER=deepinfra/turbo. The OpenRouter adapter requests JSON object mode, which returned valid replies on both pilot tasks.
-
-~~~sh
-.venv/bin/python -m beygir run pilot --split pilot --models gpt20 gpt120 qwen llama
-.venv/bin/python -m beygir run main --split main --models gpt20 gpt120 qwen llama
-~~~
-
-Existing replies are reused if the same run ID is extended with Llama while retaining all existing model aliases. OpenRouter models are opt-in because they can incur token charges. OpenRouter's free-model limits do not apply to the paid Llama endpoint. Provider limits and account credit availability can still affect the run.
-
-The optional minimax alias selects MiniMax M2.7 via OPENROUTER_MINIMAX_PROVIDER. Live MiniMax checks reached the completion cap before returning a task answer. Keep it out of the main lineup until a separate pilot establishes a usable configuration. The Groq keys currently in use reject general-purpose Llama and MiniMax. Groq's allam-2-7b can also be selected explicitly with --models allam.
+Groq’s allam-2-7b can also be selected explicitly with --models allam.
 
 ## Rebuild the dataset
 

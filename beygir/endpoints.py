@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 import httpx
 
 GROQ_URL = "https://api.groq.com/openai/v1"
-OPENROUTER_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODELS = ("gpt20", "gpt120", "qwen")
 
 
@@ -24,37 +23,27 @@ class Endpoint:
     alias: str
     model_id: str
     base_url: str = GROQ_URL
-    provider: str = ""
     reasoning: str = "low"
     limits: Limits = Limits()
     max_tokens: int = 4096
     structured_output: bool = True
     token_estimate: int = 2600
-    json_object: bool = False
 
     def signature(self) -> dict:
         return {"alias": self.alias, "model_id": self.model_id, "api": self.base_url,
-                "provider": self.provider, "reasoning": self.reasoning,
+                "provider": "", "reasoning": self.reasoning,
                 "temperature": 0, "max_completion_tokens": self.max_tokens,
-                "structured_output": self.structured_output,
-                **({"response_format": "json_object"} if self.json_object else {})}
+                "structured_output": self.structured_output}
 
     def payload(self, prompt: str, schema: dict) -> dict:
         request = {"model": self.model_id, "temperature": 0,
                    "messages": [{"role": "user", "content": prompt}]}
-        if self.base_url == GROQ_URL:
-            request["max_completion_tokens"] = self.max_tokens
-            if self.reasoning:
-                request["reasoning_effort"] = self.reasoning
-                request["include_reasoning"] = False
-        else:
-            request["max_tokens"] = self.max_tokens
-            request["provider"] = {"only": [self.provider], "allow_fallbacks": False}
+        request["max_completion_tokens"] = self.max_tokens
+        if self.reasoning:
+            request["reasoning_effort"] = self.reasoning
+            request["include_reasoning"] = False
         if self.structured_output:
             request["response_format"] = schema
-        elif self.json_object:
-            request["response_format"] = {"type": "json_object"}
-            request["provider"]["require_parameters"] = True
         return request
 
 
@@ -69,32 +58,16 @@ class Route:
 
 
 def catalog() -> dict[str, Endpoint]:
-    llama_provider = os.getenv("OPENROUTER_PROVIDER", "").strip()
-    minimax_provider = os.getenv("OPENROUTER_MINIMAX_PROVIDER", "").strip()
     return {
         "gpt20": Endpoint("gpt20", "openai/gpt-oss-20b"),
         "gpt120": Endpoint("gpt120", "openai/gpt-oss-120b"),
         "qwen": Endpoint("qwen", "qwen/qwen3.8-27b", reasoning="none", max_tokens=512, token_estimate=750),
         "allam": Endpoint("allam", "allam-2-7b", reasoning="",
                           limits=Limits(rpd=7000, tpm=6000, tpd=500_000), max_tokens=512, structured_output=False, token_estimate=900),
-        "llama": Endpoint("llama", "meta-llama/llama-3.3-70b-instruct", OPENROUTER_URL,
-                          provider=llama_provider, reasoning="",
-                          limits=Limits(rpd=10000, tpm=8000, tpd=4_000_000), max_tokens=512,
-                          structured_output=False, token_estimate=900, json_object=True),
-        "minimax": Endpoint("minimax", "minimax/minimax-m2.7", OPENROUTER_URL,
-                            provider=minimax_provider, reasoning="", structured_output=False, json_object=True,
-                            limits=Limits(rpd=10000, tpm=8000, tpd=4_000_000)),
     }
 
 
-def configured_routes(endpoint: Endpoint) -> list[Route]:
-    if endpoint.base_url == OPENROUTER_URL:
-        key = os.getenv("OPENROUTER_API_KEY", "").strip()
-        if not key or not endpoint.provider:
-            provider_variable = ("OPENROUTER_PROVIDER" if endpoint.alias == "llama"
-                                 else "OPENROUTER_MINIMAX_PROVIDER")
-            raise ValueError(f"{endpoint.alias} needs OPENROUTER_API_KEY and {provider_variable} in .env")
-        return [Route("openrouter", f"openrouter:{endpoint.provider}", key)]
+def configured_routes() -> list[Route]:
     numbers = sorted(int(match[1]) for name in os.environ
                      if (match := re.fullmatch(r"GROQ_API_KEY_(\d+)", name)))
     routes = []
