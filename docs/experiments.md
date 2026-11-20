@@ -1,5 +1,9 @@
 # Running BEYGIR
 
+The [README](../README.md) gives the final study's setup, results workflow,
+and exact offline commands. The legacy Groq and Bedrock pilots below use
+different run IDs and sample sizes.
+
 Use Python 3.12 from the repository root.
 
 ~~~sh
@@ -90,6 +94,18 @@ sh scripts/run-stockholm.sh
 The launcher prevents idle sleep on macOS with caffeinate. Responses and failed attempts are committed to SQLite as they arrive. The runner waits through throttling and retries temporary errors, and exports a snapshot every 15 minutes. A permanent endpoint error pauses that model while the others continue. If the short-term Bedrock token expires, replace it in .env and restart the launcher with the existing run ID. Saved responses are reused. Scores and plots can also be rebuilt offline with `.venv/bin/python -m beygir report stockholm-extended-main`.
 
 The export adds all-moves-legal accuracy and legal prefix statistics for generation, and legality and first-illegal-index metrics for each audit length. The audit_by_length.png figure appears once there are positive and negative responses for at least one audit cell.
+
+### Reproduce the paper analyses
+
+With the original SQLite database in place, run the paper and quality
+commands from the repository root. Both read the saved run and work without
+provider credentials. See the [README analysis guide](../README.md#reproduce-the-analysis-from-sqlite)
+for the figure-to-metric mapping and the output filenames.
+
+~~~sh
+.venv/bin/python -m beygir.analysis paper
+.venv/bin/python -m beygir.analysis play5-check
+~~~
 
 ### Batch
 
